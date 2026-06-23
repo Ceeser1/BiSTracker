@@ -1,0 +1,15 @@
+## Interface: 30300
+## Title: BiS Tracker
+## Notes: Tracks characters, specs, instance lockouts and equipped gear vs BiS list
+## Author: Ceeser
+## Version: 1.0
+## SavedVariables: BiSTrackerDB
+
+Constants.lua
+Utils.lua
+BiSTracker.lua
+Minimap.lua
+Main.lua
+Edit.lua
+Export.lua
+Loot.lua
