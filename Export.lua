@@ -46,10 +46,11 @@ end
 
 function BiSTracker_ShowExportFrame()
     -- Build export string: one entry per character-spec combination, separated by |
-    -- Each entry has 3 ";"-separated sections:
+    -- Each entry has 4 ";"-separated sections:
     --   1) Name.Spec              ("." separated; class is implied by the spec)
     --   2) 17 gear slots          ("-" separated, GEAR_SLOTS order)
-    --   3) 6-bit lock binary      (ICC25,ICC10,RS25,RS10,TOC25,TOC10; 1=locked)
+    --   3) GearScore              (integer; 0 if unknown/unscanned)
+    --   4) 6-bit lock binary      (ICC25,ICC10,RS25,RS10,TOC25,TOC10; 1=locked)
     local charList = {}
     for charKey, charData in pairs(BiSTrackerDB.characters) do
         table.insert(charList, { key=charKey, data=charData })
@@ -69,12 +70,12 @@ function BiSTracker_ShowExportFrame()
             local specEntry = d.specs[specName]
             local specLabel = SPEC_EXPORT[specName] or specName
 
-            -- Section 1: character info, "." separated (Name.Spec).
+            -- Character info, "." separated (Name.Spec).
             -- Spec lives here so its "-" never collides with the gear split.
             -- Class is omitted: it's already encoded in the spec label suffix.
             local info = table.concat({ d.name or "?", specLabel }, ".")
 
-            -- Section 2: 17 gear slots, "-" separated (GEAR_SLOTS order).
+            -- 17 gear slots, "-" separated (GEAR_SLOTS order).
             local gear      = specEntry.gear or {}
             local gearParts = {}
             for _, slot in ipairs(GEAR_SLOTS) do
@@ -82,7 +83,10 @@ function BiSTracker_ShowExportFrame()
             end
             local gearStr = table.concat(gearParts, "-")
 
-            -- Section 3: 6-bit instance-lock binary (1=locked, 0=free).
+            -- GearScore of the last-scanned equipped gear (per-spec).
+            local gsStr = tostring(math.floor((specEntry.gearScore or 0)))
+
+            -- 6-bit instance-lock binary (1=locked, 0=free).
             -- Order follows INSTANCES: ICC25, ICC10, RS25, RS10, TOC25, TOC10.
             local locks     = d.locks
             local lockParts = {}
@@ -91,7 +95,7 @@ function BiSTracker_ShowExportFrame()
             end
             local lockStr = table.concat(lockParts)
 
-            table.insert(charStrings, info .. ";" .. gearStr .. ";" .. lockStr)
+            table.insert(charStrings, info .. ";" .. gearStr .. ";" .. gsStr .. ";" .. lockStr)
         end
     end
 

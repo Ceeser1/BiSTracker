@@ -301,7 +301,7 @@ function handleCheckbox(sheet, row, checkedCol, nameCol, isChecked) {
 }
 
 // ============================================================
-// COUNTERS — "X / Y BiS" in G of header row
+// COUNTERS — "X / Y BiS - <n> GS" in G of header row
 // ============================================================
 function updateCounters(sheet, headerRow) {
   const dataEnd = findDataEnd(sheet, headerRow);
@@ -317,7 +317,21 @@ function updateCounters(sheet, headerRow) {
     if (bis || alt) count++;
   }
 
-  sheet.getRange(headerRow, COL_BIS_NAME).setValue(`${count} / ${total} BiS`);
+  // Preserve any existing " - <n> GS" suffix so a manual checkbox toggle
+  // (which calls this) doesn't wipe the imported GearScore.
+  const cur    = sheet.getRange(headerRow, COL_BIS_NAME).getValue().toString();
+  const m      = cur.match(/-\s*(\d+)\s*GS\s*$/i);
+  const suffix = m ? ` - ${m[1]} GS` : "";
+  sheet.getRange(headerRow, COL_BIS_NAME).setValue(`${count} / ${total} BiS${suffix}`);
+}
+
+// Write the imported GearScore as a " - <n> GS" suffix on the "X / Y BiS"
+// header (col G). gs<=0 (unknown) → strip the suffix, leaving just the BiS count.
+function setHeaderGearScore_(sheet, header, gs) {
+  const cur  = sheet.getRange(header, COL_BIS_NAME).getValue().toString();
+  const base = cur.replace(/\s*-\s*\d+\s*GS\s*$/i, "").trim(); // drop old GS suffix
+  const text = (gs && gs > 0) ? `${base} - ${gs} GS` : base;
+  sheet.getRange(header, COL_BIS_NAME).setValue(text);
 }
 
 // ============================================================
@@ -378,8 +392,8 @@ function readAddonString_() {
   return (raw === null || raw === undefined) ? "" : raw.toString().trim();
 }
 
-// C2 — parse ONE entry: "Name.Spec;<17 gear>;<6 lock bits>".
-// Returns {ok, name, spec, gear[17], locks[6], error}. On failure ok=false +
+// C2 — parse ONE entry: "Name.Spec;<17 gear>;<gearscore>;<6 lock bits>".
+// Returns {ok, name, spec, gear[17], gs, locks[6], error}. On failure ok=false +
 // a human-readable error (used to abort the whole import before any writes).
 function parseEntry_(s) {
   const fail = (error) => ({ ok: false, error: error });
@@ -387,12 +401,8 @@ function parseEntry_(s) {
   if (s === "") return fail("empty entry");
 
   const sections = s.split(";");
-  if (sections.length !== 3) {
-    return fail(`expected 3 ";" sections, got ${sections.length}`);
-  }
 
-  // Section 1: Name.Spec
-  const info = sections[0].split(".");
+  const info = (sections[0] || "").split(".");
   if (info.length !== 2) {
     return fail(`bad "Name.Spec" segment: "${sections[0]}"`);
   }
@@ -400,19 +410,23 @@ function parseEntry_(s) {
   const spec = info[1].trim();
   if (name === "" || spec === "") return fail(`empty name or spec: "${sections[0]}"`);
 
-  // Section 2: 17 gear tokens
-  const gear = sections[1].split("-");
+  const gear = (sections[1] || "").split("-");
   if (gear.length !== 17) {
     return fail(`expected 17 gear slots, got ${gear.length} (${name})`);
   }
 
-  // Section 3: 6 lock bits
-  const locks = sections[2].trim();
+  const gsRaw = (sections[2] || "").trim();
+  if (!/^\d+$/.test(gsRaw)) {
+    return fail(`bad GearScore "${gsRaw}" (need a number) (${name})`);
+  }
+  const gs = parseInt(gsRaw, 10);
+
+  const locks = (sections[3] || "").trim();
   if (!/^[01]{6}$/.test(locks)) {
     return fail(`bad lock bits "${locks}" (need 6× 0/1) (${name})`);
   }
 
-  return { ok: true, name: name, spec: spec, gear: gear, locks: locks.split("") };
+  return { ok: true, name: name, spec: spec, gear: gear, gs: gs, locks: locks.split("") };
 }
 
 // C3 — parse the WHOLE paste: split on "|", validate every entry.
@@ -672,9 +686,10 @@ function applySlotChoice_(sheet, row, choice, otherText, nameMap) {
   }
 }
 
-// C6b — write all gear tokens for a block, then refresh its "X / Y BiS" counter.
+// C6b — write all gear tokens for a block, refresh its "X / Y BiS" counter, and
+// stamp the imported GearScore as the " - <n> GS" suffix on that header.
 //   "0" empty | "1" BiS | "2" Alt | anything else = Other item ID (→ AA).
-function applyGear_(sheet, header, gearArr, nameMap) {
+function applyGear_(sheet, header, gearArr, nameMap, gs) {
   const dataEnd  = findDataEnd(sheet, header);
   const counters = { ring: 0, trinket: 0 };
   for (let r = header + 2; r <= dataEnd; r++) { // header+1 = label row
@@ -688,6 +703,7 @@ function applyGear_(sheet, header, gearArr, nameMap) {
     else                    applySlotChoice_(sheet, r, "oth",  token, nameMap);
   }
   updateCounters(sheet, header);
+  setHeaderGearScore_(sheet, header, gs); // GS travels with gear (Update All / Equipment)
 }
 
 // C6c — write the 6 instance-lock bits onto a block's header row + date stamp.
@@ -807,7 +823,7 @@ function runUpdate_(opts) {
         return;
       }
 
-      if (opts.gear)  applyGear_(charsSheet, header, entry.gear, nameMap);
+      if (opts.gear)  applyGear_(charsSheet, header, entry.gear, nameMap, entry.gs);
       if (opts.locks) applyLocks_(charsSheet, header, entry.locks);
       applyUwuLink_(charsSheet, header, entry.name, spec);
       stampUpdatedDate_(charsSheet, header);
