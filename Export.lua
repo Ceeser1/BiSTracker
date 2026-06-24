@@ -70,10 +70,11 @@ function BiSTracker_ShowExportFrame()
             local specEntry = d.specs[specName]
             local specLabel = SPEC_EXPORT[specName] or specName
 
-            -- Character info, "." separated (Name.Spec).
-            -- Spec lives here so its "-" never collides with the gear split.
-            -- Class is omitted: it's already encoded in the spec label suffix.
-            local info = table.concat({ d.name or "?", specLabel }, ".")
+            -- Character info, "." separated (Name.Spec.Realm).
+            -- Realm comes from the char key ("Name-Realm"). Spec/realm "-" never
+            -- collide with the gear split; class is encoded in the spec label suffix.
+            local realm = (entry.key:match("^.-%-(.+)$") or GetRealmName() or ""):gsub("[%.;|]", "")
+            local info  = table.concat({ d.name or "?", specLabel, realm }, ".")
 
             -- 17 gear slots, "-" separated (GEAR_SLOTS order).
             local gear      = specEntry.gear or {}
@@ -109,8 +110,13 @@ function BiSTracker_ShowExportFrame()
     end
 
     local ef = CreateFrame("Frame", "BiSTrackerExportFrame", UIParent)
-    ef:SetWidth(560); ef:SetHeight(310)
-    ef:SetPoint("CENTER", UIParent, "CENTER")
+    ef:SetWidth(560); ef:SetHeight(154)
+    -- Sit above the main window with a little gap (fall back to screen center).
+    if mainFrame then
+        ef:SetPoint("BOTTOM", mainFrame, "TOP", 0, 8)
+    else
+        ef:SetPoint("CENTER", UIParent, "CENTER")
+    end
     ef:SetFrameStrata("TOOLTIP")
     ef:SetMovable(true); ef:EnableMouse(true)
     ef:RegisterForDrag("LeftButton")
@@ -121,25 +127,47 @@ function BiSTracker_ShowExportFrame()
         edgeFile="Interface\\DialogFrame\\UI-DialogBox-Border",
         edgeSize=26, insets={left=9,right=9,top=9,bottom=9},
     })
+    ef:SetBackdropColor(0, 0, 0, 1) -- near-opaque window background
 
     local title = ef:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOP", ef, "TOP", 0, -14); title:SetText("Export String")
+    title:SetPoint("TOP", ef, "TOP", 0, -14); title:SetText("Export String for the Spreadsheet")
 
     local closeBtn = CreateFrame("Button", nil, ef, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", ef, "TOPRIGHT", -2, -2)
     closeBtn:SetScript("OnClick", function() ef:Hide() end)
 
     local hint = ef:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    hint:SetPoint("TOPLEFT", ef, "TOPLEFT", 16, -40)
-    hint:SetText("|cffaaaaaa Press Ctrl+C to copy the text.|r")
+    hint:SetPoint("TOP", ef, "TOP", 0, -38)
+    hint:SetText("|cffaaaaaaPress Ctrl+C to copy the text below|r")
 
-    local eb = CreateFrame("EditBox", nil, ef)
+    -- A WoW EditBox does NOT clip its text/selection to its own frame, so a
+    -- multi-line HighlightText() draws the highlight out to the EditBox's full
+    -- width, spilling past the visible box. Hosting the EditBox in a ScrollFrame
+    -- clips it to the scroll window (highlight stays inside) and adds vertical
+    -- scrolling for long strings.
+    local sf = CreateFrame("ScrollFrame", "BiSTrackerExportScroll", ef, "UIPanelScrollFrameTemplate")
+    sf:SetPoint("TOPLEFT", ef, "TOPLEFT", 16, -66)
+    sf:SetWidth(504); sf:SetHeight(46)
+
+    local sfBg = sf:CreateTexture(nil, "BACKGROUND")
+    sfBg:SetAllPoints(); sfBg:SetTexture(1, 1, 1, 0.05)
+
+    local eb = CreateFrame("EditBox", nil, sf)
     eb:SetMultiLine(true); eb:SetMaxLetters(99999)
-    eb:SetWidth(524); eb:SetHeight(210)
-    eb:SetPoint("TOPLEFT", ef, "TOPLEFT", 16, -58)
+    eb:SetWidth(484); eb:SetHeight(46) -- narrower than sf so text clears the scrollbar
     eb:SetFontObject(ChatFontNormal); eb:SetAutoFocus(true); eb:EnableMouse(true)
-    local ebBg = eb:CreateTexture(nil, "BACKGROUND")
-    ebBg:SetAllPoints(); ebBg:SetTexture(0, 0, 0, 0.6)
+    eb:SetTextColor(1, 1, 1) -- white text, readable over the dark window background
+    eb:SetTextInsets(4, 4, 4, 4)
+    eb:SetScript("OnEscapePressed", function() ef:Hide() end)
+    -- Standard Blizzard scrolling-edit helpers (FrameXML, present in 3.3.5a) keep the
+    -- scroll range correct and follow the cursor. Guarded so clipping still works
+    -- (ScrollFrame clips regardless) even if the helper is ever unavailable.
+    if ScrollingEdit_OnTextChanged then
+        eb:SetScript("OnTextChanged",   function(self) ScrollingEdit_OnTextChanged(self, sf) end)
+        eb:SetScript("OnCursorChanged", ScrollingEdit_OnCursorChanged)
+        sf:SetScript("OnUpdate",        function(self, elapsed) ScrollingEdit_OnUpdate(eb, elapsed, self) end)
+    end
+    sf:SetScrollChild(eb)
     eb:SetText(exportStr); eb:HighlightText()
 
     -- Done button below the text field

@@ -93,8 +93,8 @@ const SPEC_EXPORT_TO_DISPLAY = {
   "Restoration-Shaman": "Restoration Shaman", "Spellhancement-Shaman": "Spellhance Shaman",
 };
 
-// UwU Logs character link. The export carries no realm, so server is fixed here
-// (change if your roster isn't on Icecrown, or add realm to the addon export).
+// Fallback UwU Logs realm — used only when an entry's exported realm is missing
+// (e.g. an older export). Normally each character's own realm from the export is used.
 const UWU_SERVER = "Icecrown";
 
 // UwU Logs spec param = per-class talent-tree index (1=tree1, 2=tree2, 3=tree3;
@@ -403,11 +403,12 @@ function parseEntry_(s) {
   const sections = s.split(";");
 
   const info = (sections[0] || "").split(".");
-  if (info.length !== 2) {
-    return fail(`bad "Name.Spec" segment: "${sections[0]}"`);
+  if (info.length < 2) {
+    return fail(`bad "Name.Spec.Realm" segment: "${sections[0]}"`);
   }
-  const name = info[0].trim();
-  const spec = info[1].trim();
+  const name  = info[0].trim();
+  const spec  = info[1].trim();
+  const realm = info.slice(2).join(".").trim(); // "" if the export omitted a realm
   if (name === "" || spec === "") return fail(`empty name or spec: "${sections[0]}"`);
 
   const gear = (sections[1] || "").split("-");
@@ -426,7 +427,7 @@ function parseEntry_(s) {
     return fail(`bad lock bits "${locks}" (need 6× 0/1) (${name})`);
   }
 
-  return { ok: true, name: name, spec: spec, gear: gear, gs: gs, locks: locks.split("") };
+  return { ok: true, name: name, spec: spec, realm: realm, gear: gear, gs: gs, locks: locks.split("") };
 }
 
 // C3 — parse the WHOLE paste: split on "|", validate every entry.
@@ -633,17 +634,19 @@ function resolveItemNames_(ids) {
 
 // ── UwU Logs character link (header col H) ──────────────────
 
-// Build the UwU Logs character URL for a char name + display spec name.
-function uwuLogsUrl_(charName, specDisplay) {
-  const id = SPEC_UWU_ID[specDisplay] || 0; // 0 = base/unknown
+// Build the UwU Logs character URL for a char name + display spec + realm
+// (falls back to UWU_SERVER when the realm is empty).
+function uwuLogsUrl_(charName, specDisplay, realm) {
+  const id     = SPEC_UWU_ID[specDisplay] || 0; // 0 = base/unknown
+  const server = (realm && realm.trim() !== "") ? realm.trim() : UWU_SERVER;
   return "https://uwu-logs.xyz/character?name=" + encodeURIComponent(charName) +
-         "&server=" + UWU_SERVER + "&spec=" + id;
+         "&server=" + encodeURIComponent(server) + "&spec=" + id;
 }
 
-// Turn the header's col-H "UwU Logs" cell into a hyperlink for this char/spec.
+// Turn the header's col-H "UwU Logs" cell into a hyperlink for this char/spec/realm.
 // Force black text so it doesn't render as the default hyperlink blue.
-function applyUwuLink_(sheet, header, charName, specDisplay) {
-  const url   = uwuLogsUrl_(charName, specDisplay);
+function applyUwuLink_(sheet, header, charName, specDisplay, realm) {
+  const url   = uwuLogsUrl_(charName, specDisplay, realm);
   const black = SpreadsheetApp.newTextStyle().setForegroundColor("#000000").build();
   const rt    = SpreadsheetApp.newRichTextValue()
     .setText("UwU Logs")
@@ -825,7 +828,7 @@ function runUpdate_(opts) {
 
       if (opts.gear)  applyGear_(charsSheet, header, entry.gear, nameMap, entry.gs);
       if (opts.locks) applyLocks_(charsSheet, header, entry.locks);
-      applyUwuLink_(charsSheet, header, entry.name, spec);
+      applyUwuLink_(charsSheet, header, entry.name, spec, entry.realm);
       stampUpdatedDate_(charsSheet, header);
       if (block) updated++;
     });

@@ -92,7 +92,7 @@ function BiSTracker_RefreshEditList()
         -- Class-colored background
         local cc = entry.data.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[entry.data.class]
         local rr, gg, bb = cc and cc.r or 0.4, cc and cc.g or 0.4, cc and cc.b or 0.4
-        row.bg:SetTexture(rr * 0.35, gg * 0.35, bb * 0.35, (rowIdx % 2 == 0) and 0.50 or 0.35)
+        row.bg:SetTexture(rr * 0.35, gg * 0.35, bb * 0.35, 0.35)
 
         local isFirstForChar = (entry.key ~= prevKey)
         prevKey = entry.key
