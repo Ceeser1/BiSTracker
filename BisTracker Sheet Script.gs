@@ -69,33 +69,17 @@ const SLOT_EXPORT_IDX = {
 const RING_IDX    = [10, 11];
 const TRINKET_IDX = [12, 13];
 
-// Option B: map the addon's SPEC_EXPORT label (what the export sends) to the
-// spec DISPLAY name used as the in-cell icon's alt-text on the sheet.
-const SPEC_EXPORT_TO_DISPLAY = {
-  "Blood-DK": "Blood DK Tank", "Blood-DK-Dps": "Blood DK Dps",
-  "Unholy-DK": "Unholy DK", "Frost-DK": "Frost DK",
-  "Fury-Warrior": "Fury Warrior", "Arms-Warrior": "Arms Warrior",
-  "Protection-Warrior": "Protection Warrior",
-  "Holy-Paladin": "Holy Paladin", "Protection-Paladin": "Protection Paladin",
-  "Retribution-Paladin": "Retribution Paladin",
-  "Assassination-Rogue": "Assassination Rogue", "Combat-Rogue": "Combat Rogue",
-  "Subtlety-Rogue": "Subtlety Rogue",
-  "Balance-Druid": "Balance Druid", "Feral-Druid": "Feral Combat Druid",
-  "Bear-Druid": "Bear Druid", "Restoration-Druid": "Restoration Druid",
-  "BM-Hunter": "Beast Mastery Hunter", "MM-Hunter": "Marksman Hunter",
-  "SV-Hunter": "Survival Hunter",
-  "Arcane-Mage": "Arcane Mage", "Fire-Mage": "Fire Mage", "Frost-Mage": "Frost Mage",
-  "Affliction-Warlock": "Affliction Warlock", "Demo-Warlock": "Demonology Warlock",
-  "Destro-Warlock": "Destruction Warlock",
-  "Discipline-Priest": "Discipline Priest", "Holy-Priest": "Holy Priest",
-  "Shadow-Priest": "Shadow Priest",
-  "Elemental-Shaman": "Elemental Shaman", "Enhancement-Shaman": "Enhancement Shaman",
-  "Restoration-Shaman": "Restoration Shaman", "Spellhancement-Shaman": "Spellhance Shaman",
-};
+// The export sends the spec fully written with "-" for spaces (e.g.
+// "Marksman-Hunter"); normalizeSpec_ just swaps "-" back to spaces, which equals
+// the sheet's display spec name. No lookup table needed.
 
 // Fallback UwU Logs realm — used only when an entry's exported realm is missing
 // (e.g. an older export). Normally each character's own realm from the export is used.
 const UWU_SERVER = "Icecrown";
+
+// Shared secret for the export integrity checksum. Must match EXPORT_SECRET in the
+// addon's Constants.lua EXACTLY (change in both, or every import is rejected).
+const EXPORT_SECRET = "BiSTrk!2026#warmane";
 
 // UwU Logs spec param = per-class talent-tree index (1=tree1, 2=tree2, 3=tree3;
 // see github.com/Ridepad/uwu-logs c_player_classes.py). Keyed by DISPLAY spec
@@ -225,9 +209,11 @@ function findHeaderRow(sheet, dataRow) {
 
 function applyVisibility(sheet, headerRow, expand) {
   const start = headerRow + 1;
-  const end   = findDataEnd(sheet, headerRow);
+  const end   = findDataEnd(sheet, headerRow); // row before the next header = the spacer
   const count = end - start + 1;
   if (count < 1) return;
+  // Include the trailing spacer row in the range so it collapses/expands WITH the
+  // character — when collapsed, characters stack directly under one another.
   expand ? sheet.showRows(start, count) : sheet.hideRows(start, count);
 }
 
@@ -460,12 +446,37 @@ function parseAddonString_(raw) {
   return result;
 }
 
-// C4a — turn an export spec label into the sheet's display name (icon alt-text).
-// Prefer the explicit map (handles the 8 abbreviated labels); otherwise just
-// swap "-" for spaces, which is a harmless no-op for already-spaced names.
+// Keyed polynomial checksum over a string (ASCII). Must match the addon's
+// ExportChecksum() exactly. P = 2^31-1 keeps h*257 within exact double range.
+function checksum_(s) {
+  const P = 2147483647;
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 257 + s.charCodeAt(i)) % P;
+  }
+  return h;
+}
+
+// Split "<payload>~<checksum>" and verify it against EXPORT_SECRET. The checksum
+// makes hand-edited exports detectable: any change to the payload yields a
+// different hash. Returns {ok, payload} or {ok:false, error}.
+function verifyChecksum_(raw) {
+  raw = (raw || "").trim();
+  const msg = "The exported string was edited, is corrupt or invalid. Try exporting again.";
+  const sep = raw.lastIndexOf("~");
+  if (sep < 0) return { ok: false, error: msg };
+  const payload = raw.slice(0, sep);
+  const given   = raw.slice(sep + 1).trim();
+  if (String(checksum_(EXPORT_SECRET + payload)) !== given) {
+    return { ok: false, error: msg };
+  }
+  return { ok: true, payload: payload };
+}
+
+// C4a — turn the export spec label into the sheet's display name (icon alt-text):
+// swap "-" back to spaces (the export wrote the full spec name with "-" for spaces).
 function normalizeSpec_(s) {
   s = (s || "").trim();
-  if (SPEC_EXPORT_TO_DISPLAY[s]) return SPEC_EXPORT_TO_DISPLAY[s];
   return s.replace(/-/g, " ").trim();
 }
 
@@ -637,7 +648,7 @@ function resolveItemNames_(ids) {
 // Build the UwU Logs character URL for a char name + display spec + realm
 // (falls back to UWU_SERVER when the realm is empty).
 function uwuLogsUrl_(charName, specDisplay, realm) {
-  const id     = SPEC_UWU_ID[specDisplay] || 0; // 0 = base/unknown
+  const id  = SPEC_UWU_ID[specDisplay] || 0; // 0 = base/unknown
   const server = (realm && realm.trim() !== "") ? realm.trim() : UWU_SERVER;
   return "https://uwu-logs.xyz/character?name=" + encodeURIComponent(charName) +
          "&server=" + encodeURIComponent(server) + "&spec=" + id;
@@ -756,13 +767,83 @@ function copyTemplate_(bisSheet, charsSheet, tmplHeader, tmplDataEnd, appendRow,
   return appendRow;
 }
 
+// Scan every character block in "My Characters" top-to-bottom.
+// Returns [{header, dataEnd, name, spec, key}] (key = "name spec").
+function scanBlocks_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const blocks  = [];
+  for (let r = 2; r <= lastRow; r++) {
+    if (!isHeaderRow(sheet, r)) continue;
+    const name = sheet.getRange(r, COL_SLOT).getValue().toString().trim();
+    const spec = blockSpec_(sheet, r);
+    blocks.push({ header: r, dataEnd: findDataEnd(sheet, r), name: name, spec: spec, key: name + " " + spec });
+  }
+  return blocks;
+}
+
+// Reorder "My Characters" blocks to match desiredKeys (the export's character
+// order). Blocks whose key isn't in desiredKeys (e.g. a character no longer
+// exported) are kept and appended after, in their current order. No-op when the
+// order already matches. Strategy: re-copy each block (full-width copyTo preserves
+// values/format/checkboxes/in-cell icons/merges) to fresh rows below the current
+// content in the target order, then delete the originals so the rebuilt region
+// slides up into place. Row visibility (which copyTo can't carry) is restored from
+// each block's toggle checkbox afterwards. A new character that sits between two
+// existing ones in the export thus lands at that same spot here.
+function reorderBlocks_(charsSheet, desiredKeys) {
+  const blocks = scanBlocks_(charsSheet);
+  if (blocks.length < 2) return;
+
+  const byKey = {};
+  blocks.forEach(b => { if (byKey[b.key] === undefined) byKey[b.key] = b; });
+
+  const seen   = {};
+  const target = [];
+  desiredKeys.forEach(k => { if (byKey[k] && !seen[k]) { seen[k] = true; target.push(byKey[k]); } });
+  blocks.forEach(b => { if (!seen[b.key]) { seen[b.key] = true; target.push(b); } });
+
+  // Already in the desired order → nothing to do (the "no mismatch" fast path).
+  if (target.length === blocks.length && target.every((b, i) => b.header === blocks[i].header)) return;
+
+  const numCols       = charsSheet.getMaxColumns();
+  const firstBlockRow = blocks[0].header;
+  const appendStart   = charsSheet.getLastRow() + 2; // clear gap below current content
+  let   cursor        = appendStart;
+
+  target.forEach(b => {
+    // Trim trailing spacer rows (empty slot col) so every block keeps exactly one
+    // gap row — otherwise a middle block's existing spacer + our added spacer would
+    // make gaps grow on each reorder.
+    let end = b.dataEnd;
+    while (end > b.header && charsSheet.getRange(end, COL_SLOT).getValue().toString().trim() === "") end--;
+    const rows = end - b.header + 1;
+    const need = cursor + rows - 1;
+    if (need > charsSheet.getMaxRows()) {
+      charsSheet.insertRowsAfter(charsSheet.getMaxRows(), need - charsSheet.getMaxRows());
+    }
+    charsSheet.getRange(b.header, 1, rows, numCols)
+              .copyTo(charsSheet.getRange(cursor, 1, rows, numCols));
+    cursor += rows + 1; // one spacer row between blocks
+  });
+
+  // Remove the originals (and the gap above the rebuilt region); the rebuilt blocks
+  // shift up to start exactly at firstBlockRow.
+  charsSheet.deleteRows(firstBlockRow, appendStart - firstBlockRow);
+
+  scanBlocks_(charsSheet).forEach(b => {
+    applyVisibility(charsSheet, b.header, charsSheet.getRange(b.header, COL_TOGGLE).getValue() === true);
+  });
+}
+
 // C8 — shared core for the three import buttons. Validates the paste FIRST and
 // aborts with an alert (no partial writes) if anything is malformed.
-//   opts = { label, gear, locks, create }
+//   opts = { label, gear, locks, create, reorder }
 //     gear/locks — which sections to write per character
 //     create     — if true, missing characters are created from the Classes BiS
 //                  template; if false (partial buttons), missing chars are skipped
 //                  (they need a full "Update All" first to exist).
+//     reorder    — if true, after writing, reorder "My Characters" blocks to match
+//                  the export's character order (new chars land at their position).
 // NOTE: when the "Undo Last Changes" feature is built (full-snapshot design),
 // take the My Characters backup here, at the top of the try block.
 function runUpdate_(opts) {
@@ -784,9 +865,15 @@ function runUpdate_(opts) {
       return;
     }
 
-    // Validation gate — abort before touching anything.
-    const raw    = readAddonString_();
-    const parsed = parseAddonString_(raw);
+    // Integrity gate — verify the checksum, then validate the payload. Either
+    // failure aborts before touching anything.
+    const raw   = readAddonString_();
+    const check = verifyChecksum_(raw);
+    if (!check.ok) {
+      ui.alert(opts.label + " — invalid addon string", "Nothing was changed.\n\n" + check.error, ui.ButtonSet.OK);
+      return;
+    }
+    const parsed = parseAddonString_(check.payload);
     if (!parsed.ok) {
       ui.alert(opts.label + " — invalid addon string",
         "Nothing was changed.\n\n" + parsed.errors.slice(0, 10).join("\n"),
@@ -833,6 +920,11 @@ function runUpdate_(opts) {
       if (block) updated++;
     });
 
+    // Reorder blocks to mirror the export's character order (Update All only).
+    if (opts.reorder && updated + created > 0) {
+      reorderBlocks_(charsSheet, parsed.entries.map(e => e.name + " " + normalizeSpec_(e.spec)));
+    }
+
     // On a run that changed something: log the update (type + time in "Your last
     // Updates", full string in the Last box) and clear the paste cell.
     if (updated + created > 0) {
@@ -855,7 +947,7 @@ function runUpdate_(opts) {
 }
 
 // Button entry points (assign these to the sheet's drawings / menu items).
-function updateAll()           { runUpdate_({ label: "Update All",            logType: "Everything",     gear: true,  locks: true,  create: true  }); }
+function updateAll()           { runUpdate_({ label: "Update All",            logType: "Everything",     gear: true,  locks: true,  create: true,  reorder: true }); }
 function updateEquipment()     { runUpdate_({ label: "Update Equipment",      logType: "Characters",     gear: true,  locks: false, create: false }); }
 function updateInstanceLocks() { runUpdate_({ label: "Update Instance Locks", logType: "Instance Locks", gear: false, locks: true,  create: false }); }
 

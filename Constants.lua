@@ -94,22 +94,10 @@ SPEC_COLORS = {
     ["Restoration Shaman"]="0070dd", ["Spellhance Shaman"]="0070dd",
 }
 
-SPEC_EXPORT = {
-    ["Blood DK Tank"]="Blood-DK",       ["Unholy DK"]="Unholy-DK",      ["Frost DK"]="Frost-DK",     ["Blood DK Dps"]="Blood-DK-Dps",
-    ["Fury Warrior"]="Fury-Warrior",    ["Arms Warrior"]="Arms-Warrior", ["Protection Warrior"]="Protection-Warrior",
-    ["Holy Paladin"]="Holy-Paladin",    ["Protection Paladin"]="Protection-Paladin",
-    ["Retribution Paladin"]="Retribution-Paladin",
-    ["Assassination Rogue"]="Assassination-Rogue", ["Combat Rogue"]="Combat-Rogue", ["Subtlety Rogue"]="Subtlety-Rogue",
-    ["Balance Druid"]="Balance-Druid", ["Feral Combat Druid"]="Feral-Druid", ["Bear Druid"]="Bear-Druid",
-    ["Restoration Druid"]="Restoration-Druid",
-    ["Beast Mastery Hunter"]="BM-Hunter", ["Marksman Hunter"]="MM-Hunter", ["Survival Hunter"]="SV-Hunter",
-    ["Arcane Mage"]="Arcane-Mage", ["Fire Mage"]="Fire-Mage", ["Frost Mage"]="Frost-Mage",
-    ["Affliction Warlock"]="Affliction-Warlock", ["Demonology Warlock"]="Demo-Warlock",
-    ["Destruction Warlock"]="Destro-Warlock",
-    ["Discipline Priest"]="Discipline-Priest", ["Holy Priest"]="Holy-Priest", ["Shadow Priest"]="Shadow-Priest",
-    ["Elemental Shaman"]="Elemental-Shaman", ["Enhancement Shaman"]="Enhancement-Shaman",
-    ["Restoration Shaman"]="Restoration-Shaman", ["Spellhance Shaman"]="Spellhancement-Shaman",
-}
+-- Shared secret for the export integrity checksum. Must match EXPORT_SECRET in the
+-- spreadsheet's Apps Script EXACTLY (change in both, or imports will be rejected).
+-- Note: the addon source is readable, so this only deters casual tampering.
+EXPORT_SECRET = "BiSTrk!2026#warmane"
 
 CLASS_ORDER = {
     "DEATHKNIGHT","WARRIOR","PALADIN","ROGUE","DRUID",

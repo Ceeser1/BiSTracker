@@ -7,7 +7,18 @@ local exportFrame = nil
 -- "0"=empty, "1"=BiS, "2"=Alt, "ItemID"=other (name resolved later; name only if no ID)
 -- Strip the export delimiters from a free-text item name so they can't break parsing.
 local function SanitizeName(name)
-    return (tostring(name or ""):gsub("[%-;|]", " "))
+    return (tostring(name or ""):gsub("[%-;|~]", " "))  -- "~" is the checksum delimiter
+end
+
+-- Keyed polynomial checksum over a string (ASCII payload). Must match checksum_()
+-- in the Apps Script importer. P = 2^31-1 keeps h*257 within Lua's exact double
+-- range, so the result is identical to the JS computation.
+local function ExportChecksum(s)
+    local P, h = 2147483647, 0
+    for i = 1, #s do
+        h = (h * 257 + s:byte(i)) % P
+    end
+    return h
 end
 
 local function GetSlotExportValue(gearSlotName, gear, specName)
@@ -55,7 +66,13 @@ function BiSTracker_ShowExportFrame()
     for charKey, charData in pairs(BiSTrackerDB.characters) do
         table.insert(charList, { key=charKey, data=charData })
     end
-    table.sort(charList, function(a, b) return (a.data.name or "") < (b.data.name or "") end)
+    -- Export in the user's chosen order (the `order` field that drives the Edit
+    -- Chars list), so the spreadsheet importer can mirror that ordering.
+    table.sort(charList, function(a, b)
+        local ao, bo = a.data.order or math.huge, b.data.order or math.huge
+        if ao ~= bo then return ao < bo end
+        return (a.data.name or "") < (b.data.name or "")
+    end)
 
     local charStrings = {}
     for _, entry in ipairs(charList) do
@@ -68,11 +85,13 @@ function BiSTracker_ShowExportFrame()
         end
         for _, specName in ipairs(specNames) do
             local specEntry = d.specs[specName]
-            local specLabel = SPEC_EXPORT[specName] or specName
+            -- Spec fully written, spaces → "-" (e.g. "Marksman Hunter" → "Marksman-Hunter").
+            -- The importer reverses it by swapping "-" back to spaces.
+            local specLabel = (specName:gsub(" ", "-"))
 
-            -- Character info, "." separated (Name.Spec.Realm).
-            -- Realm comes from the char key ("Name-Realm"). Spec/realm "-" never
-            -- collide with the gear split; class is encoded in the spec label suffix.
+            -- Character info, "." separated (Name.Spec.Realm). Realm comes from the
+            -- char key ("Name-Realm"), fully written. Spec/realm "-" never collide
+            -- with the gear split; class is encoded in the spec name itself.
             local realm = (entry.key:match("^.-%-(.+)$") or GetRealmName() or ""):gsub("[%.;|]", "")
             local info  = table.concat({ d.name or "?", specLabel, realm }, ".")
 
@@ -100,7 +119,16 @@ function BiSTracker_ShowExportFrame()
         end
     end
 
-    local exportStr = (#charStrings > 0) and table.concat(charStrings, "|") or "(No characters tracked)"
+    -- Keyed integrity checksum: a tamper edit anywhere in the payload changes the
+    -- hash, so the importer rejects hand-edited strings. Must match the Apps Script
+    -- checksum_() exactly. Appended as "<payload>~<checksum>".
+    local exportStr
+    if #charStrings > 0 then
+        local payload = table.concat(charStrings, "|")
+        exportStr = payload .. "~" .. tostring(ExportChecksum(EXPORT_SECRET .. payload))
+    else
+        exportStr = "(No characters tracked)"
+    end
 
     if exportFrame then
         exportFrame.eb:SetText(exportStr)
