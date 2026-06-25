@@ -12,4 +12,4 @@ Minimap.lua
 Main.lua
 Edit.lua
 Export.lua
-Loot.lua
+Settings.lua

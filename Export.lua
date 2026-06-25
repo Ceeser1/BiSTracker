@@ -119,12 +119,18 @@ function BiSTracker_ShowExportFrame()
         end
     end
 
-    -- Keyed integrity checksum: a tamper edit anywhere in the payload changes the
-    -- hash, so the importer rejects hand-edited strings. Must match the Apps Script
-    -- checksum_() exactly. Appended as "<payload>~<checksum>".
+    -- Format: "<account>;<entries>~<checksum>". The account alias (or "NoAccName"
+    -- when unset) prefixes the export so the sheet can group characters by account
+    -- (split off at the FIRST ";"). The keyed checksum covers the whole
+    -- "<account>;<entries>" payload, so a tamper edit changes the hash and the
+    -- importer rejects it. Must match Apps Script checksum_(). Delimiter chars are
+    -- stripped from the alias so it can't break parsing.
     local exportStr
     if #charStrings > 0 then
-        local payload = table.concat(charStrings, "|")
+        local accLabel = (BiSTrackerDB.accountAlias or ""):gsub("[;|~]", " ")
+        accLabel = Trim(accLabel)
+        if accLabel == "" then accLabel = "NoAccName" end
+        local payload = accLabel .. ";" .. table.concat(charStrings, "|")
         exportStr = payload .. "~" .. tostring(ExportChecksum(EXPORT_SECRET .. payload))
     else
         exportStr = "(No characters tracked)"

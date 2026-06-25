@@ -7,6 +7,7 @@ local lsRaidRowPool      = {}
 local lsRaidDetailPanels = {}
 local expandedRaidMembers = {}
 local lsGeneralCollapsed  = false  -- General Settings section collapse state
+local lsExportCollapsed   = false  -- Export Settings section collapse state
 local lsAnnounceCollapsed = false  -- Announce Settings section collapse state
 local raidScanData       = {}  -- [playerName] = { spec, class, gear={} }
 
@@ -523,6 +524,7 @@ function LootSettings_SyncUI()
     if lsWidgets.cbAutoScanLocks then lsWidgets.cbAutoScanLocks:SetChecked(ls.autoScanLocks) end
     if lsWidgets.cbSkipAnnouncer then lsWidgets.cbSkipAnnouncer:SetChecked(ls.skipAnnouncer) end
     if lsWidgets.cbMinimapPopup  then lsWidgets.cbMinimapPopup:SetChecked(ls.minimapPopup)   end
+    if lsWidgets.aliasBox        then lsWidgets.aliasBox:SetText(BiSTrackerDB.accountAlias or "") end
     lsWidgets.cbReactNone:SetChecked(  ls.reactTo == "nothing")
     lsWidgets.cbReactRC:SetChecked(    ls.reactTo == "raidChat")
     lsWidgets.cbReactRW:SetChecked(    ls.reactTo == "raidWarning")
@@ -892,6 +894,41 @@ function BuildLootSettingsUI(c)
     FS(genBody, 28,  -96, COLOR.white .. " Never be Announcer|r")
     FS(genBody, 190, -96, COLOR.grey .. "(If enabled, you can never be the announcer of the raid)|r")
 
+    -- ============ Export Settings ============
+    local EXP_BODY_H = 150
+    local expHeader, expCollapseBtn = MakeHeader("Export Settings")
+    local expBody = CreateFrame("Frame", nil, c)
+    expBody:SetWidth(636); expBody:SetHeight(EXP_BODY_H)
+
+    -- Account Alias row — label, input box and warning all vertically centered on
+    -- one line, each anchored to the previous element's edge with the same 12px gap.
+    local aliasLabel = expBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    aliasLabel:SetPoint("LEFT", expBody, "TOPLEFT", 12, -22)
+    aliasLabel:SetText(COLOR.white .. "Account Alias:|r")
+
+    local aliasBox = CreateFrame("EditBox", nil, expBody, "InputBoxTemplate")
+    aliasBox:SetAutoFocus(false)
+    aliasBox:SetWidth(159); aliasBox:SetHeight(20)   -- ~25% of the 636-wide body
+    aliasBox:SetPoint("LEFT", aliasLabel, "RIGHT", 12, 0)
+    aliasBox:SetMaxLetters(20)
+    aliasBox:SetScript("OnTextChanged",   function(self) BiSTrackerDB.accountAlias = self:GetText() end)
+    aliasBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() end)
+    aliasBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+    local aliasWarn = expBody:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    aliasWarn:SetPoint("LEFT", aliasBox, "RIGHT", 12, 0)
+    aliasWarn:SetText("|cffff2020DO NOT USE YOUR REAL ACCOUNT NAME.|r")
+
+    local aliasInfo1 = expBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    aliasInfo1:SetPoint("TOPLEFT", expBody, "TOPLEFT", 10, -48)
+    aliasInfo1:SetWidth(616); aliasInfo1:SetJustifyH("LEFT")
+    aliasInfo1:SetText(COLOR.lgrey .. "Give this account an alias like Main/Second/XYZ's Account/Whatever. This is only relevant for exporting into your BisTracker Sheet if you are using multiple accounts.|r")
+
+    local aliasInfo2 = expBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    aliasInfo2:SetPoint("TOPLEFT", expBody, "TOPLEFT", 10, -88)
+    aliasInfo2:SetWidth(616); aliasInfo2:SetJustifyH("LEFT")
+    aliasInfo2:SetText(COLOR.grey .. "Why its important? The sheet is designed to support multiple accounts. If you are using the sheet for multiple accounts in a single sheet/copy, when pasting the export string to update your characters and no account name is set for multiple accounts it will delete chars that are not existing in the current export string.|r")
+
     -- ============ Announce Settings ============
     local annHeader, annCollapseBtn = MakeHeader("Announcer Settings")
     local body = CreateFrame("Frame", nil, c)
@@ -1018,6 +1055,15 @@ function BuildLootSettingsUI(c)
             genBody:ClearAllPoints(); genBody:SetPoint("TOPLEFT", c, "TOPLEFT", 0, y); genBody:Show()
             y = y - GEN_BODY_H
         end
+        expHeader:ClearAllPoints();  expHeader:SetPoint("TOPLEFT", c, "TOPLEFT", 0, y)
+        expCollapseBtn:SetText(lsExportCollapsed and "v" or "^")
+        y = y - HEADER_H
+        if lsExportCollapsed then
+            expBody:Hide()
+        else
+            expBody:ClearAllPoints(); expBody:SetPoint("TOPLEFT", c, "TOPLEFT", 0, y); expBody:Show()
+            y = y - EXP_BODY_H
+        end
         annHeader:ClearAllPoints();  annHeader:SetPoint("TOPLEFT", c, "TOPLEFT", 0, y)
         annCollapseBtn:SetText(lsAnnounceCollapsed and "v" or "^")
         y = y - HEADER_H
@@ -1041,6 +1087,7 @@ function BuildLootSettingsUI(c)
     lsWidgets.cbAutoScanLocks = cbAutoScanLocks
     lsWidgets.cbSkipAnnouncer = cbSkipAnnouncer
     lsWidgets.cbMinimapPopup  = cbMinimapPopup
+    lsWidgets.aliasBox        = aliasBox
     lsWidgets.cbReactNone   = cbReactNone;   lsWidgets.cbReactRC    = cbReactRC
     lsWidgets.cbReactRW     = cbReactRW
     lsWidgets.cbAnnNone     = cbAnnNone;     lsWidgets.cbAnnBiS     = cbAnnBiS
@@ -1053,6 +1100,11 @@ function BuildLootSettingsUI(c)
     -- Collapse toggles (independent per section)
     genCollapseBtn:SetScript("OnClick", function()
         lsGeneralCollapsed = not lsGeneralCollapsed
+        UpdateLayout()
+        BiSTracker_RefreshRaidList()
+    end)
+    expCollapseBtn:SetScript("OnClick", function()
+        lsExportCollapsed = not lsExportCollapsed
         UpdateLayout()
         BiSTracker_RefreshRaidList()
     end)

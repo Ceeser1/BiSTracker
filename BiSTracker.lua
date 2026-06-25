@@ -11,7 +11,7 @@ local ADDON_NAME = "BiSTracker"
 BiSTrackerDB = BiSTrackerDB or { characters = {} }
 
 mainFrame      = nil
-raidScanFrame  = nil   -- assigned in GUI/Loot.lua
+raidScanFrame  = nil   -- assigned in GUI/Settings.lua
 raidScanQueue  = {}
 detailPanels   = {}
 expandedChars  = {}
