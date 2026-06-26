@@ -843,7 +843,7 @@ function applyPairedSlots_(sheet, header, dataEnd, slotName, exportIdx, gearArr,
   // Equipped item IDs from the export (only real numeric IDs count; "0"/codes don't).
   const equipped = exportIdx.map(i => {
     const tok = (i >= 1 && i <= gearArr.length) ? String(gearArr[i - 1]) : "";
-    return /^\d+$/.test(tok) ? { id: tok, used: false } : null;
+    return (/^\d+$/.test(tok) && tok !== "0") ? { id: tok, used: false } : null; // "0" = empty slot
   });
 
   // Each row's bis/alt item IDs, read from the Wowhead links in cols G / N.
