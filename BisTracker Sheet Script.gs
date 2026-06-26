@@ -33,9 +33,10 @@ const LOCK_PAIRS = [
   { check: 21, label: 22, inst: "ToC10" }, // U/V
 ];
 
-const COLOR_HAVE   = "#b6d7a8";
+const COLOR_HAVE   = "#c8e1be"; // light green for "have"/selected cells (midpoint of Sheets' light-green 2 #b6d7a8 and 3 #d9ead3)
 const COLOR_GREY   = "#D3D3D3";
 const COLOR_LOCKED = "#ff2e2e";
+const COLOR_PREBIS = "#e8821e"; // darker orange — Other item whose name matches BiS/Alt (pre-BiS, wrong ilvl); reads better on the green cell than the addon's lighter COLOR.lorange
 
 // ============================================================
 // ADDON IMPORT — config for the "Update All" button
@@ -52,6 +53,13 @@ const LOG_ROW      = 4;         // top row of the log = row 4
 const LOG_LEN      = 6;         // rows 4..9 (6 entries); anything past row 9 is dropped
 const LOG_COL_TYPE = 23;        // W — update type ("Instance Locks"/"Characters"/"Everything")
 const LOG_COL_TIME = 24;        // X — local date+time stamp
+
+// "Your last Updates" timestamp = Warmane SERVER TIME (GMT+0), which is identical for
+// every Warmane player regardless of where they live (and Apps Script can't read a
+// viewer's PC clock anyway). So we stamp in GMT and label it "ST (GMT)". UPDATE_24H =
+// true for a 24-hour clock, false for 12-hour am/pm.
+const UPDATE_TZ  = "GMT";
+const UPDATE_24H = true;
 
 // Hidden full-sheet snapshot of "My Characters" for one-level "Undo Last Changes".
 const BACKUP_SHEET = "_MyCharsBackup";
@@ -757,10 +765,9 @@ function applySlotChoice_(sheet, row, choice, otherText, nameMap) {
   if (choice === "oth") {
     const token = otherText == null ? "" : String(otherText);
     if (/^\d+$/.test(token)) {
-      const label = (nameMap && nameMap[token]) ? nameMap[token] : token;
-      const url   = wowheadItemUrl_(token);
-      const rt    = SpreadsheetApp.newRichTextValue().setText(label).setLinkUrl(url).build();
-      sheet.getRange(row, COL_OTH_NAME).setRichTextValue(rt);
+      const label  = (nameMap && nameMap[token]) ? nameMap[token] : token;
+      const preBiS = isPreBiSName_(sheet, row, label);
+      sheet.getRange(row, COL_OTH_NAME).setRichTextValue(otherRichText_(label, token, preBiS));
     } else {
       sheet.getRange(row, COL_OTH_NAME).setValue(token); // non-numeric fallback name, no link
     }
@@ -788,6 +795,32 @@ function extractItemId_(sheet, row, col) {
   return m ? m[1] : null;
 }
 
+// Displayed text of a cell (the linked item name, for a Wowhead-link cell).
+function cellText_(sheet, row, col) {
+  const rtv = sheet.getRange(row, col).getRichTextValue();
+  return rtv ? rtv.getText() : sheet.getRange(row, col).getDisplayValue();
+}
+
+// True when `name` (an Other item's resolved name) equals this row's BiS or Alt item
+// name — i.e. the same item at a different ilvl (pre-BiS). The export only puts an item
+// in "Other" when its ID didn't match, so a name match here means a wrong-ilvl version
+// (e.g. 10 vs 25H share a name but differ by ID), which the addon paints light orange.
+function isPreBiSName_(sheet, row, name) {
+  const norm = s => String(s == null ? "" : s).trim().toLowerCase();
+  const target = norm(name);
+  if (!target) return false;
+  return target === norm(cellText_(sheet, row, COL_BIS_NAME))
+      || target === norm(cellText_(sheet, row, COL_ALT_NAME));
+}
+
+// Build the Other cell's rich text: item name linked to Wowhead. A pre-BiS name (matches
+// this row's BiS/Alt) is painted light orange; otherwise default link styling.
+function otherRichText_(label, id, preBiS) {
+  const b = SpreadsheetApp.newRichTextValue().setText(label).setLinkUrl(wowheadItemUrl_(id));
+  if (preBiS) b.setTextStyle(SpreadsheetApp.newTextStyle().setForegroundColor(COLOR_PREBIS).build());
+  return b.build();
+}
+
 // Set a Ring/Trinket data row's three checkboxes. Unlike applySlotChoice_, BiS and Alt
 // are INDEPENDENT and can both be checked at once — the player has both the BiS and the
 // Alt of this row equipped. "Other" stays exclusive: an Other item clears BiS+Alt.
@@ -809,9 +842,9 @@ function applyPairedRow_(sheet, row, bisOn, altOn, othId, nameMap) {
   if (oth) {
     const token = String(othId);
     if (/^\d+$/.test(token)) {
-      const label = (nameMap && nameMap[token]) ? nameMap[token] : token;
-      sheet.getRange(row, COL_OTH_NAME).setRichTextValue(
-        SpreadsheetApp.newRichTextValue().setText(label).setLinkUrl(wowheadItemUrl_(token)).build());
+      const label  = (nameMap && nameMap[token]) ? nameMap[token] : token;
+      const preBiS = isPreBiSName_(sheet, row, label);
+      sheet.getRange(row, COL_OTH_NAME).setRichTextValue(otherRichText_(label, token, preBiS));
     } else {
       sheet.getRange(row, COL_OTH_NAME).setValue(token); // non-numeric fallback name, no link
     }
@@ -1337,20 +1370,13 @@ function updateAll()           { runUpdate_({ label: "Update All",            lo
 function updateEquipment()     { runUpdate_({ label: "Update Equipment",      logType: "Characters",     gear: true,  locks: false, reorder: false }); }
 function updateInstanceLocks() { runUpdate_({ label: "Update Instance Locks", logType: "Instance Locks", gear: false, locks: true,  reorder: false }); }
 
-// True if the spreadsheet's locale region conventionally uses a 12-hour (am/pm)
-// clock. Apps Script runs server-side and CANNOT read the user's PC clock setting,
-// so this is derived from the spreadsheet locale (e.g. en_US → 12h, de_DE → 24h).
-function uses12hClock_(ss) {
-  const loc = (ss.getSpreadsheetLocale() || Session.getActiveUserLocale() || "").toLowerCase();
-  return /(^en$)|_(us|ca|au|nz|ph|in|pk)$/.test(loc);
-}
-
-// Local date+time stamp: "dd.MM.yy HH:mm" (24h) or "dd.MM.yy hh:mm a" (12h am/pm),
-// in the spreadsheet's timezone.
+// Server-time stamp, e.g. "26.06.26 21:38 ST (GMT)" — Warmane server time (GMT),
+// labelled "ST (GMT)". Clock style pinned by UPDATE_24H (server-side code can't read
+// the viewer's PC clock/zone, and server time is the same for all players anyway).
 function formatUpdateStamp_(ss) {
-  const tz = ss.getSpreadsheetTimeZone() || Session.getScriptTimeZone();
-  const pattern = uses12hClock_(ss) ? "dd.MM.yy hh:mm a" : "dd.MM.yy HH:mm";
-  return Utilities.formatDate(new Date(), tz, pattern);
+  const tz      = UPDATE_TZ || ss.getSpreadsheetTimeZone() || Session.getScriptTimeZone();
+  const pattern = UPDATE_24H ? "dd.MM.yy HH:mm" : "dd.MM.yy hh:mm a";
+  return Utilities.formatDate(new Date(), tz, pattern) + " ST (GMT)";
 }
 
 // Style the "Last Update String" box for displaying a pasted/applied string:
