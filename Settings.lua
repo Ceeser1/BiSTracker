@@ -1247,6 +1247,8 @@ do
             if (pts or 0) > maxPoints then maxPoints = pts; maxTab = tab end
         end
         if maxPoints == 0 then return nil end
+        if classFile == "DEATHKNIGHT" and maxTab == 1 then return ResolveBloodDK(true) end
+        if classFile == "SHAMAN"      and maxTab == 2 then return ResolveEnhanceShaman(true) end
         return trees[maxTab]
     end
 

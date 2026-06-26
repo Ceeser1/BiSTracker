@@ -39,6 +39,32 @@ function CountSpecs(char)
     return n
 end
 
+-- Rank of the talent at a given grid position (tier=row, column), 1-indexed
+-- from the top-left. talentIndex is a flat list, so we match on tier/column
+-- (locale-independent, unlike the talent name). inspect=true reads the unit
+-- currently under NotifyInspect. Returns 0 if not found / no points.
+function GetTalentRankAt(tab, tier, column, inspect)
+    for i = 1, GetNumTalents(tab, inspect) do
+        local _, _, t, c, rank = GetTalentInfo(tab, i, inspect)
+        if t == tier and c == column then return rank or 0 end
+    end
+    return 0
+end
+
+-- DK Blood tree (tab 1) doesn't say Tank vs DPS by points alone: a DPS build
+-- takes Dancing Rune Weapon (tier 11, col 2, the 51-pointer); a tank skips it.
+function ResolveBloodDK(inspect)
+    if GetTalentRankAt(1, 11, 2, inspect) > 0 then return "Blood DK Dps" end
+    return "Blood DK Tank"
+end
+
+-- Shaman Enhancement tree (tab 2): a real Enhancement build takes Feral Spirit
+-- (tier 11, col 2, the 51-pointer); a Spellhance build skips it. Skilled => Enhancement.
+function ResolveEnhanceShaman(inspect)
+    if GetTalentRankAt(2, 11, 2, inspect) > 0 then return "Enhancement Shaman" end
+    return "Spellhance Shaman"
+end
+
 function DetectSpec()
     local _, class = UnitClass("player")
     if not class then return "Unknown" end
@@ -49,6 +75,8 @@ function DetectSpec()
         local _, _, pts = GetTalentTabInfo(i)
         if pts and pts > maxPts then maxPts = pts; maxTree = i end
     end
+    if class == "DEATHKNIGHT" and maxTree == 1 then return ResolveBloodDK(false) end
+    if class == "SHAMAN"      and maxTree == 2 then return ResolveEnhanceShaman(false) end
     return trees[maxTree] or class
 end
 
