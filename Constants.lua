@@ -76,7 +76,7 @@ CLASS_TREES = {
     MAGE         = { "Arcane Mage",         "Fire Mage",          "Frost Mage"          },
     WARLOCK      = { "Affliction Warlock",  "Demonology Warlock", "Destruction Warlock" },
     PRIEST       = { "Discipline Priest",   "Holy Priest",        "Shadow Priest"       },
-    SHAMAN       = { "Elemental Shaman",    "Enhancement Shaman", "Restoration Shaman"  },
+    SHAMAN       = { "Elemental Shaman",    "Enhancement Shaman", "Restoration Shaman", "Spellhance Shaman"   },
 }
 
 SPEC_COLORS = {

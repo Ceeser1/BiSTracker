@@ -185,7 +185,7 @@ local function SetAnnouncer(name)
     if currentAnnouncer ~= name then
         currentAnnouncer = name
         if debugMode then
-            Print("[Announcer] New announcer selected: |cffffffff" .. (name or "None") .. "|r")
+            Print("[Announcer] A new announcer for this Raid got selected: |cffffffff" .. (name or "None") .. "|r")
         end
     end
     UpdateAnnouncerUI()
