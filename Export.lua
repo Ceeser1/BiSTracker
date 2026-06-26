@@ -4,7 +4,9 @@
 
 local exportFrame = nil
 
--- "0"=empty, "1"=BiS, "2"=Alt, "ItemID"=other (name resolved later; name only if no ID)
+-- Every gear slot is exported as the equipped item's ID ("0"=empty). BiS/Alt/Other is
+-- decided on the SHEET by matching this ID against each row's Wowhead item=<id> link,
+-- so the addon's BiS-row order and the sheet's row order don't have to agree.
 -- Strip the export delimiters from a free-text item name so they can't break parsing.
 local function SanitizeName(name)
     return (tostring(name or ""):gsub("[%-;|~]", " "))  -- "~" is the checksum delimiter
@@ -21,38 +23,16 @@ local function ExportChecksum(s)
     return h
 end
 
-local function GetSlotExportValue(gearSlotName, gear, specName)
-    local equipped = gear and gear[gearSlotName]
-    if not equipped then return "0" end
-
-    local specData = BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[specName]
-    if not specData then
-        local id = equipped.id or 0
-        -- ID-only for "other" items (name resolved later via Wowhead);
-        -- fall back to the sanitized name only if no ID is available.
-        return id > 0 and tostring(id) or SanitizeName(equipped.name)
-    end
-
-    local function slotMatches(entrySlot)
-        if gearSlotName == "Ring 1" or gearSlotName == "Ring 2" then return entrySlot == "Ring"
-        elseif gearSlotName == "Trinket 1" or gearSlotName == "Trinket 2" then return entrySlot == "Trinket"
-        elseif gearSlotName == "Off Hand" then return entrySlot == "Off Hand" or entrySlot == "Shield"
-        elseif gearSlotName == "Ranged" then return RANGED_SLOTS[entrySlot] == true
-        else return entrySlot == gearSlotName end
-    end
-
-    local equippedName = Trim(equipped.name)
-    for _, entry in ipairs(specData) do
-        if slotMatches(Trim(entry.slot)) then
-            if entry.bis and Trim(entry.bis.name) == equippedName then return "1" end
-            if entry.alt and Trim(entry.alt.name) == equippedName then return "2" end
-        end
-    end
-
-    local id = equipped.id or 0
-    -- ID-only for "other" items (name resolved later via Wowhead);
-    -- fall back to the sanitized name only if no ID is available.
-    return id > 0 and tostring(id) or SanitizeName(equipped.name)
+-- Export value for one gear slot: the equipped item's ID ("0" if the slot is empty; the
+-- sanitized name only as a fallback when an item somehow has no ID). Never "1"/"2" — the
+-- sheet decides BiS/Alt/Other by matching this ID against each row's bis/alt Wowhead
+-- item=<id> link. Because matching is purely by item identity, Ring/Trinket's two-rows
+-- case and the Shield/Ranged slot aliases are handled transparently on the sheet side.
+local function GetSlotExportValue(gearSlotName, gear)
+    local it = gear and gear[gearSlotName]
+    if not it then return "0" end
+    local id = it.id or 0
+    return id > 0 and tostring(id) or SanitizeName(it.name)
 end
 
 function BiSTracker_ShowExportFrame()
@@ -102,11 +82,13 @@ function BiSTracker_ShowExportFrame()
             local realm = (entry.key:match("^.-%-(.+)$") or GetRealmName() or ""):gsub("[%.;|]", "")
             local info  = table.concat({ d.name or "?", specLabel, realm }, ".")
 
-            -- 17 gear slots, "-" separated (GEAR_SLOTS order).
+            -- 17 gear slots, "-" separated (GEAR_SLOTS order). Every slot is the equipped
+            -- item's ID ("0" if empty); the sheet decides BiS/Alt/Other by matching each
+            -- ID to its row's Wowhead links (see GetSlotExportValue).
             local gear      = specEntry.gear or {}
             local gearParts = {}
             for _, slot in ipairs(GEAR_SLOTS) do
-                table.insert(gearParts, GetSlotExportValue(slot.name, gear, specName))
+                table.insert(gearParts, GetSlotExportValue(slot.name, gear))
             end
             local gearStr = table.concat(gearParts, "-")
 

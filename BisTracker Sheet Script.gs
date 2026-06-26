@@ -72,7 +72,8 @@ const SLOT_EXPORT_IDX = {
   "Ranged": 17, "Crossbow": 17, "Bow": 17, "Gun": 17, "Thrown": 17, "Wand": 17,
   "Idol": 17, "Libram": 17, "Totem": 17, "Sigil": 17, "Relic": 17,
 };
-// Ring/Trinket appear twice per block — resolved by order of appearance (see resolveGear_).
+// Ring/Trinket export indices (1-based), two slots each. Exported as item IDs and
+// matched to the block's rows by ID in applyPairedSlots_ (NOT by position).
 const RING_IDX    = [10, 11];
 const TRINKET_IDX = [12, 13];
 
@@ -327,11 +328,23 @@ function handleCheckbox(sheet, row, checkedCol, nameCol, isChecked) {
   sheet.getRange(row, nameCol).setBackground(isChecked ? COLOR_HAVE : COLOR_GREY);
   if (!isChecked) return;
 
-  const others = [
-    { check: COL_BIS_CHECK, name: COL_BIS_NAME },
-    { check: COL_ALT_CHECK, name: COL_ALT_NAME },
-    { check: COL_OTH_CHECK, name: COL_OTH_NAME },
-  ].filter(p => p.check !== checkedCol);
+  // Ring/Trinket rows allow BiS + Alt checked at the same time (a player can equip both
+  // the BiS and the Alt of one row). On those rows, checking BiS or Alt only clears
+  // Other; checking Other still clears both. Every other row keeps full mutual exclusion
+  // (a single slot holds one item).
+  const slot   = (sheet.getRange(row, COL_SLOT).getValue() || "").toString().trim();
+  const paired = (slot === "Ring" || slot === "Trinket");
+
+  let others;
+  if (paired && (checkedCol === COL_BIS_CHECK || checkedCol === COL_ALT_CHECK)) {
+    others = [{ check: COL_OTH_CHECK, name: COL_OTH_NAME }]; // BiS/Alt only clear Other
+  } else {
+    others = [
+      { check: COL_BIS_CHECK, name: COL_BIS_NAME },
+      { check: COL_ALT_CHECK, name: COL_ALT_NAME },
+      { check: COL_OTH_CHECK, name: COL_OTH_NAME },
+    ].filter(p => p.check !== checkedCol);
+  }
 
   others.forEach(pair => {
     if (isCheckbox(sheet, row, pair.check)) {
@@ -347,16 +360,24 @@ function handleCheckbox(sheet, row, checkedCol, nameCol, isChecked) {
 function updateCounters(sheet, headerRow) {
   const dataEnd = findDataEnd(sheet, headerRow);
   let count = 0, total = 0;
+  let ringChecks = 0, trinketChecks = 0;
 
   for (let r = headerRow + 2; r <= dataEnd; r++) {
-    const slotVal = sheet.getRange(r, COL_SLOT).getValue();
-    if (!slotVal) continue; // skip spacer rows
+    const slot = (sheet.getRange(r, COL_SLOT).getValue() || "").toString().trim();
+    if (!slot) continue; // skip spacer rows
     total++;
     const bis = sheet.getRange(r, COL_BIS_CHECK).getValue() === true;
     const alt = isCheckbox(sheet, r, COL_ALT_CHECK) &&
                 sheet.getRange(r, COL_ALT_CHECK).getValue() === true;
-    if (bis || alt) count++;
+    // Ring/Trinket may have BOTH BiS+Alt checked (both equipped), so count each checked
+    // box — but the group is capped at 2 below (only 2 physical slots each), so X can
+    // never overflow (e.g. 19/17) even if stale/extra boxes are checked. Other slots
+    // count once.
+    if (slot === "Ring")         ringChecks    += (bis ? 1 : 0) + (alt ? 1 : 0);
+    else if (slot === "Trinket") trinketChecks += (bis ? 1 : 0) + (alt ? 1 : 0);
+    else if (bis || alt)         count++;
   }
+  count += Math.min(ringChecks, 2) + Math.min(trinketChecks, 2);
 
   // Preserve any existing " - <n> GS" suffix so a manual checkbox toggle
   // (which calls this) doesn't wipe the imported GearScore.
@@ -550,26 +571,13 @@ function normalizeSpec_(s) {
   return s.replace(/-/g, " ").trim();
 }
 
-// C4b — given a sheet slot name (col B) and the 17-token export gear array,
-// return the token for that slot. Ring/Trinket appear twice per block and are
-// resolved by order of appearance, tracked in `counters` ({ring,trinket}),
-// which the caller resets per block and this function mutates. Returns the
-// token string, or null when the slot name is unknown / index out of range.
-function resolveGear_(slotName, gearArr, counters) {
+// C4b — given a sheet slot name (col B) and the 17-token export gear array, return the
+// export token for that slot, or null when the slot is unknown / out of range. Ring and
+// Trinket are NOT handled here — they're matched by item ID in applyPairedSlots_.
+function resolveGear_(slotName, gearArr) {
   slotName = (slotName || "").toString().trim();
-  if (slotName === "") return null;
-
-  let idx; // 1-based export index
-  if (slotName === "Ring") {
-    idx = RING_IDX[counters.ring];
-    counters.ring++;
-  } else if (slotName === "Trinket") {
-    idx = TRINKET_IDX[counters.trinket];
-    counters.trinket++;
-  } else {
-    idx = SLOT_EXPORT_IDX[slotName];
-  }
-
+  if (slotName === "" || slotName === "Ring" || slotName === "Trinket") return null;
+  const idx = SLOT_EXPORT_IDX[slotName]; // 1-based export index
   if (!idx || idx < 1 || idx > gearArr.length) return null;
   return gearArr[idx - 1];
 }
@@ -641,8 +649,11 @@ function parseWowheadName_(text) {
   }
 }
 
-// Gather the unique numeric "Other" item IDs across all parsed entries. The
-// codes "0"/"1"/"2" are empty/BiS/Alt — every other numeric token is an item ID.
+// Gather every unique numeric item ID across all parsed entries (gear is now exported
+// as item IDs for ALL slots; "0" = empty). Only items that end up as "Other" actually
+// use the resolved name, but we can't tell which until apply time, so we resolve them
+// all — item names are immutable and cached forever, so this is a one-time cost per ID.
+// ("1"/"2" are excluded for safety although the current export never emits them.)
 function collectOtherIds_(entries) {
   const seen = {};
   const ids  = [];
@@ -758,22 +769,140 @@ function applySlotChoice_(sheet, row, choice, otherText, nameMap) {
   }
 }
 
+// Read the Wowhead item ID from a cell's hyperlink ("...item=<id>..."). The link can
+// sit on the whole cell or on a text run, so check both. Returns the ID as a string,
+// or null when there's no link / no id.
+function extractItemId_(sheet, row, col) {
+  const rtv = sheet.getRange(row, col).getRichTextValue();
+  if (!rtv) return null;
+  let url = rtv.getLinkUrl();
+  if (!url) {
+    const runs = rtv.getRuns();
+    for (let i = 0; i < runs.length; i++) {
+      const u = runs[i].getLinkUrl();
+      if (u) { url = u; break; }
+    }
+  }
+  if (!url) return null;
+  const m = url.toString().match(/item=(\d+)/);
+  return m ? m[1] : null;
+}
+
+// Set a Ring/Trinket data row's three checkboxes. Unlike applySlotChoice_, BiS and Alt
+// are INDEPENDENT and can both be checked at once — the player has both the BiS and the
+// Alt of this row equipped. "Other" stays exclusive: an Other item clears BiS+Alt.
+// othId (string) sets the Other item as a Wowhead link; null/"" = no Other.
+function applyPairedRow_(sheet, row, bisOn, altOn, othId, nameMap) {
+  const oth = (othId != null && othId !== "");
+  if (oth) { bisOn = false; altOn = false; } // Other unchecks the other two
+
+  if (isCheckbox(sheet, row, COL_BIS_CHECK)) {
+    sheet.getRange(row, COL_BIS_CHECK).setValue(bisOn);
+    sheet.getRange(row, COL_BIS_NAME).setBackground(bisOn ? COLOR_HAVE : COLOR_GREY);
+  }
+  if (isCheckbox(sheet, row, COL_ALT_CHECK)) {
+    sheet.getRange(row, COL_ALT_CHECK).setValue(altOn);
+    sheet.getRange(row, COL_ALT_NAME).setBackground(altOn ? COLOR_HAVE : COLOR_GREY);
+  }
+  if (isCheckbox(sheet, row, COL_OTH_CHECK)) sheet.getRange(row, COL_OTH_CHECK).setValue(oth);
+
+  if (oth) {
+    const token = String(othId);
+    if (/^\d+$/.test(token)) {
+      const label = (nameMap && nameMap[token]) ? nameMap[token] : token;
+      sheet.getRange(row, COL_OTH_NAME).setRichTextValue(
+        SpreadsheetApp.newRichTextValue().setText(label).setLinkUrl(wowheadItemUrl_(token)).build());
+    } else {
+      sheet.getRange(row, COL_OTH_NAME).setValue(token); // non-numeric fallback name, no link
+    }
+  } else {
+    sheet.getRange(row, COL_OTH_NAME).setValue(""); // clear stale Other (also clears link)
+  }
+}
+
+// Ring/Trinket import — matched by item ID, not by position, so the addon's BiS-row
+// order and the sheet's row order don't have to agree. The export sends each equipped
+// ring/trinket's item ID (or "0"); each sheet row's BiS (col G) and Alt (col N) name
+// cell carries a Wowhead item=<id> link, giving the row's bis/alt IDs. Each equipped ID
+// is matched against the rows' bis IDs, then their alt IDs (each match consuming its
+// item). A single row may match BOTH its bis AND its alt — the player has both equipped
+// — and then both boxes are checked. Leftovers become "Other" on rows with no match;
+// rows with nothing are cleared.
+//
+// EVERY ring/trinket row is rewritten here on each gear import (applyPairedRow_ sets all
+// three boxes, clearing any that don't match the new gear). So a stale BiS+Alt pair from
+// a previous import can't linger or stack — re-importing different gear can never leave
+// 3 checked boxes across the 2 rows.
+function applyPairedSlots_(sheet, header, dataEnd, slotName, exportIdx, gearArr, nameMap) {
+  const rows = [];
+  for (let r = header + 2; r <= dataEnd; r++) {
+    if ((sheet.getRange(r, COL_SLOT).getValue() || "").toString().trim() === slotName) rows.push(r);
+  }
+  if (rows.length === 0) return;
+
+  // Equipped item IDs from the export (only real numeric IDs count; "0"/codes don't).
+  const equipped = exportIdx.map(i => {
+    const tok = (i >= 1 && i <= gearArr.length) ? String(gearArr[i - 1]) : "";
+    return /^\d+$/.test(tok) ? { id: tok, used: false } : null;
+  });
+
+  // Each row's bis/alt item IDs, read from the Wowhead links in cols G / N.
+  const info = rows.map(r => ({
+    row: r, bis: false, alt: false, othId: null,
+    bisId: extractItemId_(sheet, r, COL_BIS_NAME),
+    altId: extractItemId_(sheet, r, COL_ALT_NAME),
+  }));
+
+  function take(targetId) {
+    if (!targetId) return false;
+    for (let k = 0; k < equipped.length; k++) {
+      if (equipped[k] && !equipped[k].used && equipped[k].id === targetId) { equipped[k].used = true; return true; }
+    }
+    return false;
+  }
+
+  // Pass 1: BiS by ID. Pass 2: Alt by ID. A row may match BOTH (its bis AND alt both
+  // equipped), each consuming its own item.
+  info.forEach(ri => { if (take(ri.bisId)) ri.bis = true; });
+  info.forEach(ri => { if (take(ri.altId)) ri.alt = true; });
+
+  // Pass 3: leftover equipped IDs → "Other" on rows with no bis/alt match; rest empty.
+  let next = 0;
+  info.forEach(ri => {
+    if (ri.bis || ri.alt) return;
+    while (next < equipped.length && (!equipped[next] || equipped[next].used)) next++;
+    if (next < equipped.length) { ri.othId = equipped[next].id; equipped[next].used = true; next++; }
+  });
+
+  info.forEach(ri => applyPairedRow_(sheet, ri.row, ri.bis, ri.alt, ri.othId, nameMap));
+}
+
 // C6b — write all gear tokens for a block, refresh its "X / Y BiS" counter, and
 // stamp the imported GearScore as the " - <n> GS" suffix on that header.
-//   "0" empty | "1" BiS | "2" Alt | anything else = Other item ID (→ AA).
+//   Every slot token is the equipped item's ID ("0" = empty). BiS/Alt/Other is decided
+//   HERE by matching that ID to the row's BiS (col G) and Alt (col N) Wowhead item=<id>
+//   links — match BiS → check BiS, match Alt → check Alt, else Other (→ AA), so the
+//   addon's BiS-row order and the sheet's row order never have to agree. Ring/Trinket
+//   (two rows) go through applyPairedSlots_ for the same ID match across both rows.
 function applyGear_(sheet, header, gearArr, nameMap, gs) {
-  const dataEnd  = findDataEnd(sheet, header);
-  const counters = { ring: 0, trinket: 0 };
+  const dataEnd = findDataEnd(sheet, header);
   for (let r = header + 2; r <= dataEnd; r++) { // header+1 = label row
     const slotName = sheet.getRange(r, COL_SLOT).getValue();
     if (!slotName) continue; // spacer row
-    const token = resolveGear_(slotName, gearArr, counters);
-    if (token === null) continue; // unknown slot — leave untouched
-    if (token === "0")      applySlotChoice_(sheet, r, "none", null,  nameMap);
-    else if (token === "1") applySlotChoice_(sheet, r, "bis",  null,  nameMap);
-    else if (token === "2") applySlotChoice_(sheet, r, "alt",  null,  nameMap);
-    else                    applySlotChoice_(sheet, r, "oth",  token, nameMap);
+    const token = resolveGear_(slotName, gearArr);
+    if (token === null) continue; // unknown slot / Ring / Trinket (handled below)
+    const t = String(token);
+    if (t === "0") { applySlotChoice_(sheet, r, "none", null, nameMap); continue; }
+    // Match the exported item ID against this row's BiS / Alt Wowhead link IDs.
+    const bisId = extractItemId_(sheet, r, COL_BIS_NAME);
+    const altId = extractItemId_(sheet, r, COL_ALT_NAME);
+    if (bisId && t === bisId)      applySlotChoice_(sheet, r, "bis", null, nameMap);
+    else if (altId && t === altId) applySlotChoice_(sheet, r, "alt", null, nameMap);
+    else                           applySlotChoice_(sheet, r, "oth", t,   nameMap);
   }
+  // Ring/Trinket: two rows, matched by item ID via applyPairedSlots_ (order-independent).
+  applyPairedSlots_(sheet, header, dataEnd, "Ring",    RING_IDX,    gearArr, nameMap);
+  applyPairedSlots_(sheet, header, dataEnd, "Trinket", TRINKET_IDX, gearArr, nameMap);
   updateCounters(sheet, header);
   setHeaderGearScore_(sheet, header, gs); // GS travels with gear (Update All / Equipment)
 }
