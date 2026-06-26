@@ -228,6 +228,55 @@ function EnsureCharOrders()
     BiSTrackerDB.nextCharId = maxOrder
 end
 
+-- Realm portion of a char key ("Name-Realm"). WoW names contain no "-", so the
+-- realm is everything after the FIRST "-". "" if the key has no realm part.
+function GetRealmFromKey(key)
+    return (key and key:match("^.-%-(.+)$")) or ""
+end
+
+-- Ensure BiSTrackerDB.realmOrder has a display index for every realm currently
+-- present among tracked characters. New realms are appended after the current max,
+-- ordered by the lowest char.order they contain (so first-seen layout is sensible).
+-- realmOrder drives realm grouping order in the Main/Edit views and the export.
+function EnsureRealmOrders()
+    BiSTrackerDB.realmOrder = BiSTrackerDB.realmOrder or {}
+    local ro     = BiSTrackerDB.realmOrder
+    local maxIdx = 0
+    for _, idx in pairs(ro) do if idx > maxIdx then maxIdx = idx end end
+
+    local realmMinOrder = {}
+    for key, char in pairs(BiSTrackerDB.characters) do
+        local realm = GetRealmFromKey(key)
+        local o     = char.order or math.huge
+        if not realmMinOrder[realm] or o < realmMinOrder[realm] then realmMinOrder[realm] = o end
+    end
+
+    local newRealms = {}
+    for realm in pairs(realmMinOrder) do
+        if not ro[realm] then table.insert(newRealms, realm) end
+    end
+    table.sort(newRealms, function(a, b) return realmMinOrder[a] < realmMinOrder[b] end)
+    for _, realm in ipairs(newRealms) do
+        maxIdx = maxIdx + 1
+        ro[realm] = maxIdx
+    end
+end
+
+-- Realms present among tracked characters, sorted by realmOrder. Used by the Main
+-- list, Edit list and the export so all three agree on realm grouping order.
+function GetSortedRealms()
+    EnsureRealmOrders()
+    local ro     = BiSTrackerDB.realmOrder
+    local realms = {}
+    local seen   = {}
+    for key in pairs(BiSTrackerDB.characters) do
+        local realm = GetRealmFromKey(key)
+        if not seen[realm] then seen[realm] = true; table.insert(realms, realm) end
+    end
+    table.sort(realms, function(a, b) return (ro[a] or math.huge) < (ro[b] or math.huge) end)
+    return realms
+end
+
 -- ============================================================
 -- GEARSCORE (Mirrikat45 formula, ported from LibGearScore-1.0)
 -- ============================================================

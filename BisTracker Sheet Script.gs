@@ -6,11 +6,18 @@
 const SHEET_CHARS = "My Characters";
 const SHEET_BIS   = "Classes BiS";
 
+// Row on "Classes BiS" holding the styled "Account - Realm" group-header template
+// (spans A:AB like every block). Copied to create a new group header on import.
+const GROUP_TEMPLATE_ROW = 555;
+
 // ── Shared column map (same layout on both sheets) ───────────
-const COL_SLOT      = 2;   // B — slot name
+const COL_GROUP_LABEL = 1; // A — "Account - Realm" group-header text (template row 555
+                           //     + the group headers on "My Characters"). NOT col B.
+const COL_SLOT      = 2;   // B — slot name (character blocks) / character name (header row)
 const COL_BIS_CHECK = 6;   // F — BiS checkbox (E holds the item icon)
 const COL_BIS_NAME  = 7;   // G — BiS item name / "X/Y BiS" header
 const COL_LOGS      = 8;   // H — "UwU Logs" link (header) / "From" (data rows)
+const COL_GROUP_TOGGLE = 9; // I — group-header collapse checkbox (checked/TRUE = expanded)
 const COL_ALT_CHECK = 13;  // M — Alt-BiS checkbox (data) / ICC10 lock (header)
 const COL_ALT_NAME  = 14;  // N — Alt-BiS item name
 const COL_OTH_CHECK = 26;  // Z — Other checkbox
@@ -110,6 +117,34 @@ function isCheckbox(sheet, row, col) {
   return val === true || val === false;
 }
 
+// A GROUP header row ("Account - Realm", on "My Characters"): col A contains " - "
+// and the row is NOT a character ("X / Y BiS") header and NOT the protected title
+// row 1. (Aliases and realms must therefore not contain " - "; realms are single
+// tokens and the alias is user-chosen.) Character-header col A holds the in-cell
+// spec icon (a non-string value), so it never false-matches here.
+function isGroupHeader_(sheet, row) {
+  if (row <= 1) return false;
+  if (isHeaderRow(sheet, row)) return false;
+  const a = sheet.getRange(row, COL_GROUP_LABEL).getValue();
+  return (typeof a === "string") && a.indexOf(" - ") >= 0;
+}
+
+// "Account - Realm" label for a group header (unset account → "NoAccName").
+function groupLabel_(account, realm) {
+  account = (account || "").toString().trim() || "NoAccName";
+  realm   = (realm   || "").toString().trim();
+  return account + " - " + realm;
+}
+
+// Split a group label back into {account, realm} on the LAST " - " (so an alias
+// containing spaces still works; the realm is a single trailing token).
+function parseGroupLabel_(label) {
+  label = (label || "").toString().trim();
+  const i = label.lastIndexOf(" - ");
+  if (i < 0) return { account: label, realm: "" };
+  return { account: label.slice(0, i).trim(), realm: label.slice(i + 3).trim() };
+}
+
 // ============================================================
 // ON OPEN
 // ============================================================
@@ -195,7 +230,9 @@ function setAllSpecs(sheetName, expand) {
 function findDataEnd(sheet, headerRow) {
   const lastRow = sheet.getLastRow();
   for (let r = headerRow + 1; r <= lastRow; r++) {
-    if (isHeaderRow(sheet, r)) return r - 1;
+    // Stop at the next character header OR the next account-group header, so a
+    // block never bleeds across an "Account - Realm" divider into the next group.
+    if (isHeaderRow(sheet, r) || isGroupHeader_(sheet, r)) return r - 1;
   }
   return lastRow;
 }
@@ -234,6 +271,13 @@ function onEdit(e) {
 
   // Only act on boolean changes (checkbox clicks)
   if (val !== "TRUE" && val !== "FALSE") return;
+
+  // ── GROUP COLLAPSE — checkbox on an "Account - Realm" header (My Characters) ──
+  // collapses/expands the whole account group (independent of per-character toggles).
+  if (name === SHEET_CHARS && isGroupHeader_(sheet, row)) {
+    applyGroupVisibility_(sheet, row, isChecked);
+    return;
+  }
 
   if (isHeaderRow(sheet, row)) {
     // ── TOGGLE — works on BOTH sheets ──────────────────────
@@ -416,18 +460,30 @@ function parseEntry_(s) {
   return { ok: true, name: name, spec: spec, realm: realm, gear: gear, gs: gs, locks: locks.split("") };
 }
 
-// C3 — parse the WHOLE paste: split on "|", validate every entry.
-// This is the gate: ok is true only if there is >=1 entry and ALL are valid.
-// Returns {ok, entries:[parsed], errors:["entry N: ..."]}.
+// C3 — parse the WHOLE paste: strip the leading "<account>;" prefix, then split
+// the rest on "|" and validate every entry. This is the gate: ok is true only if
+// there is >=1 entry and ALL are valid. Returns
+// {ok, account, entries:[parsed], errors:["entry N: ..."]}.
 function parseAddonString_(raw) {
-  const result = { ok: false, entries: [], errors: [] };
+  const result = { ok: false, account: "", entries: [], errors: [] };
   raw = (raw || "").trim();
   if (raw === "") {
     result.errors.push("paste cell is empty");
     return result;
   }
 
-  const parts = raw.split("|");
+  // The export prefixes "<account>;" (or "NoAccName;") to the entry list — split
+  // it off at the FIRST ";". Everything after is the "|"-joined entry list.
+  const firstSep = raw.indexOf(";");
+  if (firstSep < 0) {
+    result.errors.push("missing account prefix");
+    return result;
+  }
+  result.account = raw.slice(0, firstSep).trim();
+  if (result.account === "") result.account = "NoAccName";
+  const body = raw.slice(firstSep + 1);
+
+  const parts = body.split("|");
   for (let i = 0; i < parts.length; i++) {
     const piece = parts[i].trim();
     if (piece === "") continue; // tolerate stray/trailing separators
@@ -521,16 +577,20 @@ function blockSpec_(sheet, headerRow) {
   return "";
 }
 
-// C5b — find an existing character block in "My Characters":
-// col-B header text == name AND col-A icon alt-text == spec (display name).
-// Returns {header, dataEnd} or null.
-function findCharBlock_(sheet, name, spec) {
-  const lastRow = sheet.getLastRow();
-  for (let r = 2; r <= lastRow; r++) { // skip protected title row 1
-    if (!isHeaderRow(sheet, r)) continue;
-    const label = sheet.getRange(r, COL_SLOT).getValue().toString().trim();
-    if (label === name && blockSpec_(sheet, r) === spec) {
-      return { header: r, dataEnd: findDataEnd(sheet, r) };
+// C5b — find an existing character block in "My Characters" for a given account:
+// col-B header == bare <name> AND col-A icon alt-text == spec, located under one of
+// THAT account's group headers (the account lives in the "Account - Realm" group
+// header, not the character row). Character blocks that appear before any group
+// header (legacy/ungrouped) match any account. Returns {header, dataEnd} or null.
+function findCharBlock_(sheet, name, spec, account) {
+  name = (name || "").toString().trim();
+  const groups = scanGroups_(sheet);
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    if (g.headerRow > 0 && g.account !== account) continue; // wrong account's group
+    for (let ci = 0; ci < g.chars.length; ci++) {
+      const c = g.chars[ci];
+      if (c.name === name && c.spec === spec) return { header: c.header, dataEnd: c.dataEnd };
     }
   }
   return null;
@@ -548,22 +608,6 @@ function findTemplateBlock_(bisSheet, spec) {
     }
   }
   return null;
-}
-
-// C5d — first free row to append a NEW character block in "My Characters":
-// after the last block + one spacer row. Never returns the protected row 1.
-function findAppendRow_(sheet) {
-  const lastRow = sheet.getLastRow();
-  let lastHeader = -1;
-  for (let r = 2; r <= lastRow; r++) {
-    if (isHeaderRow(sheet, r)) lastHeader = r;
-  }
-  // First character sits directly under the protected title (no gap). Later
-  // blocks keep exactly one spacer row between them: the previous block's
-  // trailing spacer is formatting-only so getLastRow/findDataEnd don't count it,
-  // hence +2 steps past it.
-  if (lastHeader === -1) return Math.max(lastRow + 1, 2);
-  return Math.max(findDataEnd(sheet, lastHeader) + 2, 2);
 }
 
 // ── Wowhead name resolution for "Other" items ───────────────
@@ -737,115 +781,259 @@ function stampUpdatedDate_(sheet, header) {
   sheet.getRange(header, COL_OTH_NAME).setValue(new Date());
 }
 
-// C7 — copy a "Classes BiS" template block onto "My Characters" at appendRow.
-// Full-width copyTo carries values, formatting, checkboxes AND the in-cell
-// class icon (CellImage, whose alt-text keeps identifying the spec). Then the
-// new header's col B is renamed from the spec name to the character name, and
-// the block is marked expanded (col AB toggle = TRUE) with its rows shown.
-// Returns the new header row (== appendRow).
-function copyTemplate_(bisSheet, charsSheet, tmplHeader, tmplDataEnd, appendRow, charName) {
-  const numRows = tmplDataEnd - tmplHeader + 1;
-  const numCols = bisSheet.getMaxColumns();
+// ── Account-group structure (My Characters) ─────────────────
 
-  // Grow the destination grid if needed — an almost-empty "My Characters" can have
-  // fewer rows/columns than a block, which would make copyTo throw "destination
-  // outside the sheet's dimensions".
-  const needRows = appendRow + numRows - 1;
-  if (needRows > charsSheet.getMaxRows()) {
-    charsSheet.insertRowsAfter(charsSheet.getMaxRows(), needRows - charsSheet.getMaxRows());
+// Trim trailing spacer rows (empty col B) off a block so every copied block keeps
+// exactly one gap row. Returns the last non-empty data row (>= header).
+function trimmedEnd_(sheet, header, dataEnd) {
+  let end = dataEnd;
+  while (end > header && sheet.getRange(end, COL_SLOT).getValue().toString().trim() === "") end--;
+  return end;
+}
+
+// Collapse/expand a whole account group: hide/show every row from the header to the
+// row before the next group header (or sheet end). On expand, characters that are
+// individually collapsed stay collapsed (their own toggle wins).
+function applyGroupVisibility_(sheet, groupHeaderRow, expand) {
+  const lastRow = sheet.getLastRow();
+  let end = lastRow;
+  for (let r = groupHeaderRow + 1; r <= lastRow; r++) {
+    if (isGroupHeader_(sheet, r)) { end = r - 1; break; }
   }
+  const start = groupHeaderRow + 1;
+  if (end < start) return;
+  if (!expand) { sheet.hideRows(start, end - start + 1); return; }
+  sheet.showRows(start, end - start + 1);
+  for (let r = start; r <= end; r++) {
+    if (isHeaderRow(sheet, r) && sheet.getRange(r, COL_TOGGLE).getValue() !== true) {
+      applyVisibility(sheet, r, false); // re-collapse a character left collapsed
+    }
+  }
+}
+
+// Scan "My Characters" into ordered account groups. Returns
+// [{headerRow, account, realm, label, endRow, chars:[{header, dataEnd, name, spec}]}].
+// Characters before any group header go into a synthetic leading group (headerRow=-1)
+// so legacy/ungrouped blocks are never lost.
+function scanGroups_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const groups  = [];
+  let cur = null;
+  for (let r = 2; r <= lastRow; r++) {
+    if (isHeaderRow(sheet, r)) {
+      if (!cur) { cur = { headerRow: -1, account: "", realm: "", label: "", chars: [] }; groups.push(cur); }
+      cur.chars.push({
+        header: r, dataEnd: findDataEnd(sheet, r),
+        name: sheet.getRange(r, COL_SLOT).getValue().toString().trim(),
+        spec: blockSpec_(sheet, r),
+      });
+    } else if (isGroupHeader_(sheet, r)) {
+      const label = sheet.getRange(r, COL_GROUP_LABEL).getValue().toString().trim();
+      const pg    = parseGroupLabel_(label);
+      cur = { headerRow: r, account: pg.account, realm: pg.realm, label: label, chars: [] };
+      groups.push(cur);
+    }
+  }
+  for (let i = 0; i < groups.length; i++) {
+    groups[i].endRow = (i + 1 < groups.length) ? groups[i + 1].headerRow - 1 : lastRow;
+  }
+  return groups;
+}
+
+// Mark a group header EXPANDED: check its collapse checkbox (col I). Checked = expanded,
+// matching onEdit's applyGroupVisibility_ and the per-character toggle convention. A
+// freshly built/rebuilt group always starts expanded (its rows are shown).
+function markGroupExpanded_(sheet, row) {
+  sheet.getRange(row, COL_GROUP_TOGGLE).setValue(true);
+}
+
+// Rebuild ONE account's region of "My Characters" to match the export: groups in the
+// order each realm first appears, characters in export order within each group.
+// Missing group headers are copied from the Classes BiS template row; missing
+// characters from their Classes BiS spec template. This account's characters/groups
+// that are NOT in the export are preserved (appended after — no deletion). Other
+// accounts' regions are left exactly in place. Full-width copyTo carries
+// values/format/checkboxes/in-cell icons/merges; row visibility (which copyTo can't
+// carry) and the gear/locks/UwU/date writes are applied after the region is built.
+// Returns { updated, created, problems }.
+function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) {
+  const result  = { updated: 0, created: 0, problems: [] };
+  const numCols  = COL_TOGGLE; // every block spans A:AB
   if (numCols > charsSheet.getMaxColumns()) {
     charsSheet.insertColumnsAfter(charsSheet.getMaxColumns(), numCols - charsSheet.getMaxColumns());
   }
 
-  const src  = bisSheet.getRange(tmplHeader, 1, numRows, numCols);
-  const dest = charsSheet.getRange(appendRow, 1, numRows, numCols);
-  src.copyTo(dest); // values + format + checkboxes + in-cell images
-  charsSheet.getRange(appendRow, COL_SLOT).setValue(charName);   // spec name → char name
-  charsSheet.getRange(appendRow, COL_TOGGLE).setValue(true);     // mark expanded
-  applyVisibility(charsSheet, appendRow, true);                  // keep rows shown to match
-  return appendRow;
-}
+  // 1) Desired groups from the export (realm = group; first-appearance order).
+  const desiredOrder = [];
+  const desiredByLabel = {};
+  entries.forEach(e => {
+    const realm = (e.realm && e.realm.trim() !== "") ? e.realm.trim() : UWU_SERVER;
+    const label = groupLabel_(account, realm);
+    if (!desiredByLabel[label]) { desiredByLabel[label] = { label: label, realm: realm, entries: [] }; desiredOrder.push(desiredByLabel[label]); }
+    desiredByLabel[label].entries.push(e);
+  });
 
-// Scan every character block in "My Characters" top-to-bottom.
-// Returns [{header, dataEnd, name, spec, key}] (key = "name spec").
-function scanBlocks_(sheet) {
-  const lastRow = sheet.getLastRow();
-  const blocks  = [];
-  for (let r = 2; r <= lastRow; r++) {
-    if (!isHeaderRow(sheet, r)) continue;
-    const name = sheet.getRange(r, COL_SLOT).getValue().toString().trim();
-    const spec = blockSpec_(sheet, r);
-    blocks.push({ header: r, dataEnd: findDataEnd(sheet, r), name: name, spec: spec, key: name + " " + spec });
+  // 2) Current state for this account (assumed contiguous on the sheet).
+  const groups    = scanGroups_(charsSheet);
+  const accGroups = groups.filter(g => g.headerRow > 0 && g.account === account);
+  const exists    = accGroups.length > 0;
+
+  const existingChars = {}; // "name\0spec" -> {header, dataEnd, used}
+  accGroups.forEach(g => g.chars.forEach(c => {
+    const key = c.name + "||" + c.spec;
+    if (!existingChars[key]) existingChars[key] = { header: c.header, dataEnd: c.dataEnd, used: false };
+  }));
+  const existingGroupByLabel = {};
+  accGroups.forEach(g => { if (!existingGroupByLabel[g.label]) existingGroupByLabel[g.label] = g; });
+
+  // Rows of a block INCLUDING one trailing spacer row — the styled "black col A"
+  // divider from the template — so a copied character carries its own spacer (which
+  // separates it from the next character and from the following group header).
+  function blkRows(sheet, header, dataEnd) {
+    const ce = trimmedEnd_(sheet, header, dataEnd);
+    return (ce < dataEnd ? ce + 1 : ce) - header + 1;
   }
-  return blocks;
-}
 
-// Reorder "My Characters" blocks to match desiredKeys (the export's character
-// order). Blocks whose key isn't in desiredKeys (e.g. a character no longer
-// exported) are kept and appended after, in their current order. No-op when the
-// order already matches. Strategy: re-copy each block (full-width copyTo preserves
-// values/format/checkboxes/in-cell icons/merges) to fresh rows below the current
-// content in the target order, then delete the originals so the rebuilt region
-// slides up into place. Row visibility (which copyTo can't carry) is restored from
-// each block's toggle checkbox afterwards. A new character that sits between two
-// existing ones in the export thus lands at that same spot here.
-function reorderBlocks_(charsSheet, desiredKeys) {
-  const blocks = scanBlocks_(charsSheet);
-  if (blocks.length < 2) return;
-
-  const byKey = {};
-  blocks.forEach(b => { if (byKey[b.key] === undefined) byKey[b.key] = b; });
-
-  const seen   = {};
-  const target = [];
-  desiredKeys.forEach(k => { if (byKey[k] && !seen[k]) { seen[k] = true; target.push(byKey[k]); } });
-  blocks.forEach(b => { if (!seen[b.key]) { seen[b.key] = true; target.push(b); } });
-
-  // Already in the desired order → nothing to do (the "no mismatch" fast path).
-  if (target.length === blocks.length && target.every((b, i) => b.header === blocks[i].header)) return;
-
-  const numCols       = charsSheet.getMaxColumns();
-  const firstBlockRow = blocks[0].header;
-  const appendStart   = charsSheet.getLastRow() + 2; // clear gap below current content
-  let   cursor        = appendStart;
-
-  target.forEach(b => {
-    // Trim trailing spacer rows (empty slot col) so every block keeps exactly one
-    // gap row — otherwise a middle block's existing spacer + our added spacer would
-    // make gaps grow on each reorder.
-    let end = b.dataEnd;
-    while (end > b.header && charsSheet.getRange(end, COL_SLOT).getValue().toString().trim() === "") end--;
-    const rows = end - b.header + 1;
-    const need = cursor + rows - 1;
-    if (need > charsSheet.getMaxRows()) {
-      charsSheet.insertRowsAfter(charsSheet.getMaxRows(), need - charsSheet.getMaxRows());
+  // Resolve one character to a copy-source (existing block of this account, else a
+  // Classes BiS spec template). Returns null when neither exists (export + no template).
+  function charSource(name, spec, entry) {
+    const key = name + "||" + spec;
+    const ex  = existingChars[key];
+    if (ex && !ex.used) {
+      ex.used = true;
+      return { kind: "existing", header: ex.header, rows: blkRows(charsSheet, ex.header, ex.dataEnd), name: name, spec: spec, entry: entry || null };
     }
-    charsSheet.getRange(b.header, 1, rows, numCols)
-              .copyTo(charsSheet.getRange(cursor, 1, rows, numCols));
-    cursor += rows + 1; // one spacer row between blocks
+    if (entry) {
+      const tmpl = findTemplateBlock_(bisSheet, spec);
+      if (!tmpl) return null;
+      return { kind: "new", tmplHeader: tmpl.header, rows: blkRows(bisSheet, tmpl.header, tmpl.dataEnd), name: name, spec: spec, entry: entry };
+    }
+    return null;
+  }
+
+  // 3) Build the ordered plan of groups → character sources.
+  const plan = [];
+  desiredOrder.forEach(dg => {
+    const exG     = existingGroupByLabel[dg.label];
+    const chars   = [];
+    dg.entries.forEach(e => {
+      const spec = normalizeSpec_(e.spec);
+      const cs   = charSource(e.name, spec, e);
+      if (!cs) { result.problems.push(`${e.name} (${spec}): no matching block on "${SHEET_BIS}"`); return; }
+      chars.push(cs);
+    });
+    plan.push({ label: dg.label, headerExisting: exG ? exG.headerRow : -1, chars: chars });
   });
 
-  // Remove the originals (and the gap above the rebuilt region); the rebuilt blocks
-  // shift up to start exactly at firstBlockRow.
-  charsSheet.deleteRows(firstBlockRow, appendStart - firstBlockRow);
-
-  scanBlocks_(charsSheet).forEach(b => {
-    applyVisibility(charsSheet, b.header, charsSheet.getRange(b.header, COL_TOGGLE).getValue() === true);
+  // 4) Preserve this account's leftover (unexported) characters — append them to
+  //    their group (creating the group in the plan if the export didn't list it).
+  accGroups.forEach(g => {
+    g.chars.forEach(c => {
+      const key = c.name + "||" + c.spec;
+      if (!existingChars[key] || existingChars[key].used) return;
+      existingChars[key].used = true;
+      const src = { kind: "existing", header: c.header, rows: blkRows(charsSheet, c.header, c.dataEnd), name: c.name, spec: c.spec, entry: null };
+      let target = null;
+      for (let i = 0; i < plan.length; i++) { if (plan[i].label === g.label) { target = plan[i]; break; } }
+      if (!target) { target = { label: g.label, headerExisting: g.headerRow, chars: [] }; plan.push(target); }
+      target.chars.push(src);
+    });
   });
+
+  // 5) Region row count. Each character block already includes its own trailing
+  //    spacer (the styled divider), so the only extra rows are the group headers.
+  let newRows = 0;
+  plan.forEach(p => {
+    newRows += 1;                             // group header (1 row, no spacer)
+    p.chars.forEach(c => { newRows += c.rows; });
+  });
+  if (newRows <= 0) return result;
+
+  // 6) Reserve the region. Existing account → insert a clean hole before its current
+  //    region (sources shift down by newRows), filled below, old region deleted after.
+  //    New account → append below all content.
+  let regionStart, oldRows, offset;
+  if (exists) {
+    regionStart = accGroups[0].headerRow;
+    const lastG  = accGroups[accGroups.length - 1];
+    // scanGroups' endRow is right when another account follows (it's nextHeader-1,
+    // which already covers the trailing-spacer divider). But for the BOTTOM-most
+    // account getLastRow ignores the value-less black trailing spacer, so extend by
+    // one to include it — otherwise the delete leaves that divider orphaned.
+    let oldEnd = lastG.endRow;
+    if (lastG.endRow >= charsSheet.getLastRow()) {
+      oldEnd = Math.min(charsSheet.getLastRow() + 1, charsSheet.getMaxRows());
+    }
+    oldRows = oldEnd - regionStart + 1;
+    charsSheet.insertRowsBefore(regionStart, newRows);
+    offset = newRows;
+  } else {
+    const lastRow = charsSheet.getLastRow();
+    // First account on the sheet → sit directly under the protected title (no gap).
+    // Otherwise the previous account's trailing spacer (a black col-A row, which
+    // getLastRow ignores) is at lastRow+1, so start at lastRow+2 to keep one divider.
+    regionStart = (groups.length > 0) ? (lastRow + 2) : (lastRow + 1);
+    oldRows = 0; offset = 0;
+    const need = regionStart + newRows - 1;
+    if (need > charsSheet.getMaxRows()) charsSheet.insertRowsAfter(charsSheet.getMaxRows(), need - charsSheet.getMaxRows());
+  }
+  charsSheet.getRange(regionStart, 1, newRows, numCols).clearFormat(); // cleared, then every row is overwritten by copyTo below
+
+  // 7) Fill top-down (copy + label/name + toggle). Record where each char lands.
+  //    No generated spacer rows — each character block carries its own.
+  let cursor = regionStart;
+  plan.forEach(p => {
+    if (p.headerExisting > 0) {
+      charsSheet.getRange(p.headerExisting + offset, 1, 1, numCols).copyTo(charsSheet.getRange(cursor, 1, 1, numCols));
+    } else {
+      bisSheet.getRange(GROUP_TEMPLATE_ROW, 1, 1, numCols).copyTo(charsSheet.getRange(cursor, 1, 1, numCols));
+    }
+    charsSheet.getRange(cursor, COL_GROUP_LABEL).setValue(p.label); // "Account - Realm" → col A
+    markGroupExpanded_(charsSheet, cursor);                          // new header starts expanded (checkbox = TRUE)
+    cursor += 1;
+    p.chars.forEach(c => {
+      if (c.kind === "existing") {
+        charsSheet.getRange(c.header + offset, 1, c.rows, numCols).copyTo(charsSheet.getRange(cursor, 1, c.rows, numCols));
+      } else {
+        bisSheet.getRange(c.tmplHeader, 1, c.rows, numCols).copyTo(charsSheet.getRange(cursor, 1, c.rows, numCols));
+        charsSheet.getRange(cursor, COL_TOGGLE).setValue(true);
+      }
+      charsSheet.getRange(cursor, COL_SLOT).setValue(c.name); // bare character name
+      c.placed = cursor;
+      cursor += c.rows;
+    });
+  });
+
+  // 8) Drop the old (now shifted) region — region rows above are unaffected.
+  if (exists && oldRows > 0) charsSheet.deleteRows(regionStart + newRows, oldRows);
+
+  // 9) Now the region is final: apply visibility + per-character export data.
+  for (let r = regionStart; r < regionStart + newRows; r++) {
+    if (isHeaderRow(charsSheet, r)) {
+      applyVisibility(charsSheet, r, charsSheet.getRange(r, COL_TOGGLE).getValue() === true);
+    }
+  }
+  plan.forEach(p => p.chars.forEach(c => {
+    if (!c.entry) return;
+    if (opts.gear)  applyGear_(charsSheet, c.placed, c.entry.gear, nameMap, c.entry.gs);
+    if (opts.locks) applyLocks_(charsSheet, c.placed, c.entry.locks);
+    applyUwuLink_(charsSheet, c.placed, c.name, c.spec, c.entry.realm);
+    stampUpdatedDate_(charsSheet, c.placed);
+    if (c.kind === "existing") result.updated++; else result.created++;
+  }));
+
+  return result;
 }
 
 // C8 — shared core for the three import buttons. Validates the paste FIRST and
 // aborts with an alert (no partial writes) if anything is malformed.
-//   opts = { label, gear, locks, create, reorder }
+//   opts = { label, gear, locks, reorder }
 //     gear/locks — which sections to write per character
-//     create     — if true, missing characters are created from the Classes BiS
-//                  template; if false (partial buttons), missing chars are skipped
-//                  (they need a full "Update All" first to exist).
-//     reorder    — if true, after writing, reorder "My Characters" blocks to match
-//                  the export's character order (new chars land at their position).
-// NOTE: when the "Undo Last Changes" feature is built (full-snapshot design),
-// take the My Characters backup here, at the top of the try block.
+//     reorder    — "Update All" path: full group-aware rebuild via rebuildAccount_
+//                  (creates "Account - Realm" groups + characters, orders them to
+//                  match the export, preserves unexported chars, leaves other
+//                  accounts in place). When false (partial buttons), only existing
+//                  blocks are updated in place — no create / group / reorder.
 function runUpdate_(opts) {
   const ui   = SpreadsheetApp.getUi();
   const lock = LockService.getScriptLock();
@@ -887,42 +1075,37 @@ function runUpdate_(opts) {
     // Only fetch Wowhead names when gear is actually being written.
     const nameMap = opts.gear ? resolveItemNames_(collectOtherIds_(parsed.entries)) : {};
 
+    // One account alias per export (account-wide SavedVariable). Characters are
+    // grouped under an "Account - Realm" header carrying this alias.
+    const account = parsed.account;
+
     let updated = 0, created = 0, skipped = 0;
     const problems = [];
 
-    parsed.entries.forEach(entry => {
-      const spec  = normalizeSpec_(entry.spec);
-      const block = findCharBlock_(charsSheet, entry.name, spec);
-
-      let header;
-      if (block) {
-        header = block.header;
-      } else if (opts.create) {
-        const tmpl = findTemplateBlock_(bisSheet, spec);
-        if (!tmpl) {
-          problems.push(`${entry.name} (${spec}): no matching block on "${SHEET_BIS}"`);
+    if (opts.reorder) {
+      // "Update All" — full group-aware rebuild: create/order "Account - Realm"
+      // groups + their characters to match the export, preserve unexported chars,
+      // leave other accounts in place. Writes gear/locks/UwU/date per entry.
+      const r = rebuildAccount_(charsSheet, bisSheet, account, parsed.entries, nameMap, opts);
+      updated = r.updated; created = r.created;
+      r.problems.forEach(p => problems.push(p));
+    } else {
+      // Partial buttons (Equipment / Instance Locks only) — update existing blocks
+      // in place; never create, group, or reorder. Missing chars need "Update All".
+      parsed.entries.forEach(entry => {
+        const spec  = normalizeSpec_(entry.spec);
+        const block = findCharBlock_(charsSheet, entry.name, spec, account);
+        if (!block) {
+          problems.push(`${entry.name} (${spec}): no block yet — run "Update All" first`);
           skipped++;
           return;
         }
-        header = copyTemplate_(bisSheet, charsSheet, tmpl.header, tmpl.dataEnd,
-                               findAppendRow_(charsSheet), entry.name);
-        created++;
-      } else {
-        problems.push(`${entry.name} (${spec}): no block yet — run "Update All" first`);
-        skipped++;
-        return;
-      }
-
-      if (opts.gear)  applyGear_(charsSheet, header, entry.gear, nameMap, entry.gs);
-      if (opts.locks) applyLocks_(charsSheet, header, entry.locks);
-      applyUwuLink_(charsSheet, header, entry.name, spec, entry.realm);
-      stampUpdatedDate_(charsSheet, header);
-      if (block) updated++;
-    });
-
-    // Reorder blocks to mirror the export's character order (Update All only).
-    if (opts.reorder && updated + created > 0) {
-      reorderBlocks_(charsSheet, parsed.entries.map(e => e.name + " " + normalizeSpec_(e.spec)));
+        if (opts.gear)  applyGear_(charsSheet, block.header, entry.gear, nameMap, entry.gs);
+        if (opts.locks) applyLocks_(charsSheet, block.header, entry.locks);
+        applyUwuLink_(charsSheet, block.header, entry.name, spec, entry.realm);
+        stampUpdatedDate_(charsSheet, block.header);
+        updated++;
+      });
     }
 
     // On a run that changed something: log the update (type + time in "Your last
@@ -947,9 +1130,9 @@ function runUpdate_(opts) {
 }
 
 // Button entry points (assign these to the sheet's drawings / menu items).
-function updateAll()           { runUpdate_({ label: "Update All",            logType: "Everything",     gear: true,  locks: true,  create: true,  reorder: true }); }
-function updateEquipment()     { runUpdate_({ label: "Update Equipment",      logType: "Characters",     gear: true,  locks: false, create: false }); }
-function updateInstanceLocks() { runUpdate_({ label: "Update Instance Locks", logType: "Instance Locks", gear: false, locks: true,  create: false }); }
+function updateAll()           { runUpdate_({ label: "Update All",            logType: "Everything",     gear: true,  locks: true,  reorder: true  }); }
+function updateEquipment()     { runUpdate_({ label: "Update Equipment",      logType: "Characters",     gear: true,  locks: false, reorder: false }); }
+function updateInstanceLocks() { runUpdate_({ label: "Update Instance Locks", logType: "Instance Locks", gear: false, locks: true,  reorder: false }); }
 
 // True if the spreadsheet's locale region conventionally uses a 12-hour (am/pm)
 // clock. Apps Script runs server-side and CANNOT read the user's PC clock setting,

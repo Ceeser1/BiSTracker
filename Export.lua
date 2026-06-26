@@ -66,9 +66,16 @@ function BiSTracker_ShowExportFrame()
     for charKey, charData in pairs(BiSTrackerDB.characters) do
         table.insert(charList, { key=charKey, data=charData })
     end
-    -- Export in the user's chosen order (the `order` field that drives the Edit
-    -- Chars list), so the spreadsheet importer can mirror that ordering.
+    -- Export grouped by realm first (realmOrder — the order realms are arranged in
+    -- the Edit Chars list), then by each character's `order` within its realm. The
+    -- sheet importer groups characters into "Account - Realm" blocks in the order
+    -- each realm first appears, so this realm ordering drives the on-sheet layout.
+    EnsureRealmOrders()
+    local realmOrder = BiSTrackerDB.realmOrder or {}
     table.sort(charList, function(a, b)
+        local ra = realmOrder[GetRealmFromKey(a.key)] or math.huge
+        local rb = realmOrder[GetRealmFromKey(b.key)] or math.huge
+        if ra ~= rb then return ra < rb end
         local ao, bo = a.data.order or math.huge, b.data.order or math.huge
         if ao ~= bo then return ao < bo end
         return (a.data.name or "") < (b.data.name or "")

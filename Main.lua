@@ -3,9 +3,13 @@
 -- ============================================================
 
 local rowPool            = {}
+local realmHeaderPool    = {}   -- Main list realm-group header rows (pooled by index)
+local collapsedRealms    = {}   -- [realm] = true → realm group collapsed in Main list (session-only)
 local allBisRowPool      = {}
 local allBisDetailPanels = {}
 local expandedSpecs      = {}
+
+local REALM_HDR_H = 22          -- height of a realm-group header row
 
 local function GetOrCreateDetailPanel(charKey)
     if detailPanels[charKey] then return detailPanels[charKey] end
@@ -273,7 +277,7 @@ function BiSTracker_ShowMainFrame()
     f.headerDiv = div
 
     -- Edit mode column headers (hidden until Edit is activated)
-    local EDIT_COL   = { 10, 195, 336, 565 }
+    local EDIT_COL   = { 10, 195, 336, 569 }
     local EDIT_HEADS = { "Character", "Spec", "BiS", "Remove?" }
     f.editHeaderLabels = {}
     for i = 1, #EDIT_HEADS do
@@ -336,23 +340,80 @@ end
 -- x positions for the 9 FontString columns inside each row frame
 local HEADER_COL = { 0, 114, 248, 292, 332, 372, 412, 452, 489, 539 }
 
+local mainEmptyRow = nil
+
+-- Pooled realm-group header row for the Main list (dark grey bar, centered realm
+-- name, collapse toggle at the right).
+local function GetOrCreateRealmHeader(idx)
+    local rh = realmHeaderPool[idx]
+    if not rh then
+        rh = CreateFrame("Frame", nil, mainFrame.content)
+        rh.bg = rh:CreateTexture(nil, "BACKGROUND"); rh.bg:SetAllPoints()
+        -- Collapse toggle on the left (same offset as the character-name column) to
+        -- keep it distinct from the per-character toggle on the right.
+        rh.toggleBtn = CreateFrame("Button", nil, rh, "UIPanelButtonTemplate")
+        rh.toggleBtn:SetWidth(26); rh.toggleBtn:SetHeight(18)
+        rh.toggleBtn:SetPoint("LEFT", rh, "LEFT", 4, 0)
+        -- Realm name floats left next to the toggle (6px gap).
+        rh.lbl = rh:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        rh.lbl:SetPoint("LEFT", rh.toggleBtn, "RIGHT", 6, 0); rh.lbl:SetJustifyH("LEFT")
+        realmHeaderPool[idx] = rh
+    end
+    return rh
+end
+
 function BiSTracker_RefreshList()
     if not mainFrame then return end
     local content = mainFrame.content
 
-    for _, row   in ipairs(rowPool)     do row:Hide()   end
-    for _, panel in pairs(detailPanels) do panel:Hide() end
+    for _, row   in ipairs(rowPool)        do row:Hide()   end
+    for _, rh    in ipairs(realmHeaderPool) do rh:Hide()    end
+    for _, panel in pairs(detailPanels)    do panel:Hide() end
+    if mainEmptyRow then mainEmptyRow:Hide() end
 
-    local sorted = {}
-    for k, v in pairs(BiSTrackerDB.characters) do
-        table.insert(sorted, { key=k, data=v })
-    end
     EnsureCharOrders()
-    table.sort(sorted, function(a, b) return (a.data.order or 0) < (b.data.order or 0) end)
 
-    local y = -2
+    -- Group characters by realm; sort each realm's chars by their order field.
+    local byRealm, total = {}, 0
+    for k, v in pairs(BiSTrackerDB.characters) do
+        local realm = GetRealmFromKey(k)
+        byRealm[realm] = byRealm[realm] or {}
+        table.insert(byRealm[realm], { key=k, data=v })
+        total = total + 1
+    end
+    for _, list in pairs(byRealm) do
+        table.sort(list, function(a, b) return (a.data.order or 0) < (b.data.order or 0) end)
+    end
+    local realms = GetSortedRealms()
 
-    for rowIdx, entry in ipairs(sorted) do
+    local y      = -2
+    local rowIdx = 0
+    local rhIdx  = 0
+
+    for _, realm in ipairs(realms) do
+        local list = byRealm[realm] or {}
+
+        -- Realm-group header.
+        rhIdx = rhIdx + 1
+        local rh = GetOrCreateRealmHeader(rhIdx)
+        rh:SetWidth(632); rh:SetHeight(REALM_HDR_H)
+        rh:SetPoint("TOPLEFT", content, "TOPLEFT", 0, y)
+        rh.bg:SetTexture(0, 0, 0, 1)
+        rh.lbl:SetText(COLOR.legendary .. (realm ~= "" and realm or "Unknown Realm") .. "|r")
+        local collapsed = collapsedRealms[realm]
+        rh.toggleBtn:SetText(collapsed and "v" or "^")
+        local capturedRealm = realm
+        rh.toggleBtn:SetScript("OnClick", function()
+            collapsedRealms[capturedRealm] = not collapsedRealms[capturedRealm]
+            BiSTracker_RefreshList()
+        end)
+        rh:Show()
+        y = y - REALM_HDR_H
+
+        if collapsed then list = {} end -- collapsed realm: render no character rows
+
+    for _, entry in ipairs(list) do
+        rowIdx = rowIdx + 1
         local charKey    = entry.key
         local charData   = entry.data
         local isExpanded = expandedChars[charKey]
@@ -466,20 +527,20 @@ function BiSTracker_RefreshList()
             panel:Show()
             y = y - panel:GetHeight()
         end
-    end
+    end -- chars in this realm
 
-    if #sorted == 0 then
-        local row = rowPool[1]
-        if not row then
-            row = CreateFrame("Frame", nil, content)
-            row.lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            row.lbl:SetPoint("CENTER")
-            table.insert(rowPool, row)
+    end -- realms
+
+    if total == 0 then
+        if not mainEmptyRow then
+            mainEmptyRow = CreateFrame("Frame", nil, content)
+            mainEmptyRow.lbl = mainEmptyRow:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            mainEmptyRow.lbl:SetPoint("CENTER")
         end
-        row:SetWidth(632); row:SetHeight(40)
-        row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -10)
-        row.lbl:SetText("|cffaaaaaaNo characters tracked yet. Log in with a character.|r")
-        row:Show()
+        mainEmptyRow:SetWidth(632); mainEmptyRow:SetHeight(40)
+        mainEmptyRow:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -10)
+        mainEmptyRow.lbl:SetText("|cffaaaaaaNo characters tracked yet. Log in with a character.|r")
+        mainEmptyRow:Show()
         y = -50
     end
 
