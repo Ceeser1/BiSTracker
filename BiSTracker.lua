@@ -1,4 +1,4 @@
--- BiSTracker v1.3
+-- BiSTracker v1.4
 -- Author: Ceeser
 
 local ADDON_NAME = "BiSTracker"
