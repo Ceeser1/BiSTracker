@@ -129,17 +129,28 @@ function isGroupHeader_(sheet, row) {
   return (typeof a === "string") && a.indexOf(" - ") >= 0;
 }
 
-// "Account - Realm" label for a group header (unset account → "NoAccName").
+// "Account - Realm" label for a group header (unset account → "NoAccName"). This
+// is the CANONICAL label used for matching/keying — it never carries the count.
 function groupLabel_(account, realm) {
   account = (account || "").toString().trim() || "NoAccName";
   realm   = (realm   || "").toString().trim();
   return account + " - " + realm;
 }
 
+// Display label for a group header: canonical "Account - Realm" + a " - <N> Char(s)"
+// suffix counting the UNIQUE characters in the group. Display-only — parseGroupLabel_
+// strips it back off, and all matching/keying uses groupLabel_ (without the count).
+function groupLabelWithCount_(canonicalLabel, charCount) {
+  return canonicalLabel + " - " + charCount + " Char" + (charCount === 1 ? "" : "s");
+}
+
 // Split a group label back into {account, realm} on the LAST " - " (so an alias
-// containing spaces still works; the realm is a single trailing token).
+// containing spaces still works; the realm is a single trailing token). The
+// display-only " - <N> Char(s)" count suffix is stripped first so it never leaks
+// into the realm.
 function parseGroupLabel_(label) {
   label = (label || "").toString().trim();
+  label = label.replace(/\s*-\s*\d+\s*chars?\s*$/i, "").trim(); // drop the count suffix
   const i = label.lastIndexOf(" - ");
   if (i < 0) return { account: label, realm: "" };
   return { account: label.slice(0, i).trim(), realm: label.slice(i + 3).trim() };
@@ -479,7 +490,10 @@ function parseAddonString_(raw) {
     result.errors.push("missing account prefix");
     return result;
   }
-  result.account = raw.slice(0, firstSep).trim();
+  // The addon encodes spaces in the account alias as "^" so a space can't visually
+  // break the single-line export string in the sheet's textbox. Decode "^" back to a
+  // space here — safe AFTER the checksum, which is computed over the encoded form.
+  result.account = raw.slice(0, firstSep).trim().split("^").join(" ");
   if (result.account === "") result.account = "NoAccName";
   const body = raw.slice(firstSep + 1);
 
@@ -830,7 +844,9 @@ function scanGroups_(sheet) {
     } else if (isGroupHeader_(sheet, r)) {
       const label = sheet.getRange(r, COL_GROUP_LABEL).getValue().toString().trim();
       const pg    = parseGroupLabel_(label);
-      cur = { headerRow: r, account: pg.account, realm: pg.realm, label: label, chars: [] };
+      // Normalize to the canonical (count-free) label so group matching against the
+      // export is unaffected by whatever " - <N> Chars" count is currently displayed.
+      cur = { headerRow: r, account: pg.account, realm: pg.realm, label: groupLabel_(pg.account, pg.realm), chars: [] };
       groups.push(cur);
     }
   }
@@ -847,17 +863,41 @@ function markGroupExpanded_(sheet, row) {
   sheet.getRange(row, COL_GROUP_TOGGLE).setValue(true);
 }
 
+// Characters under `account` (matched by realm+name+spec) that are NOT present in the
+// export `entries` — i.e. exactly what "Update All" will DELETE. Used for the pre-flight
+// confirmation. Mirrors the realm+name+spec keying + realm fallback used by
+// rebuildAccount_ so the two always agree. Returns [{realm, name, spec}] in sheet order.
+function findDeletions_(charsSheet, account, entries) {
+  const desired = {};
+  entries.forEach(e => {
+    const realm = (e.realm && e.realm.trim() !== "") ? e.realm.trim() : UWU_SERVER;
+    const spec  = normalizeSpec_(e.spec);
+    desired[realm + "||" + e.name.trim() + "||" + spec] = true;
+  });
+  const out = [];
+  scanGroups_(charsSheet).forEach(g => {
+    if (g.headerRow <= 0 || g.account !== account) return; // only this account's groups
+    g.chars.forEach(c => {
+      if (!desired[g.realm + "||" + c.name + "||" + c.spec]) {
+        out.push({ realm: g.realm, name: c.name, spec: c.spec });
+      }
+    });
+  });
+  return out;
+}
+
 // Rebuild ONE account's region of "My Characters" to match the export: groups in the
 // order each realm first appears, characters in export order within each group.
 // Missing group headers are copied from the Classes BiS template row; missing
-// characters from their Classes BiS spec template. This account's characters/groups
-// that are NOT in the export are preserved (appended after — no deletion). Other
-// accounts' regions are left exactly in place. Full-width copyTo carries
-// values/format/checkboxes/in-cell icons/merges; row visibility (which copyTo can't
-// carry) and the gear/locks/UwU/date writes are applied after the region is built.
-// Returns { updated, created, problems }.
+// characters from their Classes BiS spec template. This account's characters that are
+// NOT in the export (matched by realm+name+spec) are DELETED — they are simply left
+// out of the rebuilt plan, so step 8's wholesale delete of the old region drops them
+// (empty groups go with them). Other accounts' regions are left exactly in place.
+// Full-width copyTo carries values/format/checkboxes/in-cell icons/merges; row
+// visibility (which copyTo can't carry) and the gear/locks/UwU/date writes are applied
+// after the region is built. Returns { updated, created, deleted, removed:[], problems }.
 function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) {
-  const result  = { updated: 0, created: 0, problems: [] };
+  const result  = { updated: 0, created: 0, deleted: 0, removed: [], problems: [] };
   const numCols  = COL_TOGGLE; // every block spans A:AB
   if (numCols > charsSheet.getMaxColumns()) {
     charsSheet.insertColumnsAfter(charsSheet.getMaxColumns(), numCols - charsSheet.getMaxColumns());
@@ -878,10 +918,12 @@ function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) 
   const accGroups = groups.filter(g => g.headerRow > 0 && g.account === account);
   const exists    = accGroups.length > 0;
 
-  const existingChars = {}; // "name\0spec" -> {header, dataEnd, used}
+  // Keyed by realm+name+spec so the same name+spec on two realms under this account
+  // stays distinct (needed for correct per-realm reuse AND deletion).
+  const existingChars = {}; // "realm||name||spec" -> {header, dataEnd, realm, name, spec, used}
   accGroups.forEach(g => g.chars.forEach(c => {
-    const key = c.name + "||" + c.spec;
-    if (!existingChars[key]) existingChars[key] = { header: c.header, dataEnd: c.dataEnd, used: false };
+    const key = g.realm + "||" + c.name + "||" + c.spec;
+    if (!existingChars[key]) existingChars[key] = { header: c.header, dataEnd: c.dataEnd, realm: g.realm, name: c.name, spec: c.spec, used: false };
   }));
   const existingGroupByLabel = {};
   accGroups.forEach(g => { if (!existingGroupByLabel[g.label]) existingGroupByLabel[g.label] = g; });
@@ -894,10 +936,11 @@ function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) 
     return (ce < dataEnd ? ce + 1 : ce) - header + 1;
   }
 
-  // Resolve one character to a copy-source (existing block of this account, else a
-  // Classes BiS spec template). Returns null when neither exists (export + no template).
-  function charSource(name, spec, entry) {
-    const key = name + "||" + spec;
+  // Resolve one character to a copy-source (existing block of this account+realm,
+  // else a Classes BiS spec template). Returns null when neither exists (export + no
+  // template). Reusing an existing block preserves the user's manual edits in it.
+  function charSource(name, spec, entry, realm) {
+    const key = realm + "||" + name + "||" + spec;
     const ex  = existingChars[key];
     if (ex && !ex.used) {
       ex.used = true;
@@ -918,25 +961,26 @@ function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) 
     const chars   = [];
     dg.entries.forEach(e => {
       const spec = normalizeSpec_(e.spec);
-      const cs   = charSource(e.name, spec, e);
+      const cs   = charSource(e.name, spec, e, dg.realm);
       if (!cs) { result.problems.push(`${e.name} (${spec}): no matching block on "${SHEET_BIS}"`); return; }
       chars.push(cs);
     });
     plan.push({ label: dg.label, headerExisting: exG ? exG.headerRow : -1, chars: chars });
   });
 
-  // 4) Preserve this account's leftover (unexported) characters — append them to
-  //    their group (creating the group in the plan if the export didn't list it).
+  // 4) DELETE this account's characters that are NOT in the export (matched by
+  //    realm+name+spec): they are intentionally left OUT of the plan, so step 8's
+  //    wholesale delete of the old region drops them (and any group thereby emptied,
+  //    since an empty group gets no plan entry). Here we only mark them consumed (so a
+  //    duplicate block of the same key isn't matched twice) and record them for the
+  //    summary. The caller confirms the deletions with the user before this runs.
   accGroups.forEach(g => {
     g.chars.forEach(c => {
-      const key = c.name + "||" + c.spec;
+      const key = g.realm + "||" + c.name + "||" + c.spec;
       if (!existingChars[key] || existingChars[key].used) return;
       existingChars[key].used = true;
-      const src = { kind: "existing", header: c.header, rows: blkRows(charsSheet, c.header, c.dataEnd), name: c.name, spec: c.spec, entry: null };
-      let target = null;
-      for (let i = 0; i < plan.length; i++) { if (plan[i].label === g.label) { target = plan[i]; break; } }
-      if (!target) { target = { label: g.label, headerExisting: g.headerRow, chars: [] }; plan.push(target); }
-      target.chars.push(src);
+      result.deleted++;
+      result.removed.push(`${c.name} (${c.spec || "?"})` + (g.realm ? ` [${g.realm}]` : ""));
     });
   });
 
@@ -988,7 +1032,12 @@ function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) 
     } else {
       bisSheet.getRange(GROUP_TEMPLATE_ROW, 1, 1, numCols).copyTo(charsSheet.getRange(cursor, 1, 1, numCols));
     }
-    charsSheet.getRange(cursor, COL_GROUP_LABEL).setValue(p.label); // "Account - Realm" → col A
+    // Header label = "Account - Realm - <N> Chars", N = unique character names in
+    // the group (a char with multiple specs is multiple blocks but counts once).
+    const seenNames = {};
+    p.chars.forEach(c => { seenNames[c.name] = true; });
+    charsSheet.getRange(cursor, COL_GROUP_LABEL)
+      .setValue(groupLabelWithCount_(p.label, Object.keys(seenNames).length)); // → col A
     markGroupExpanded_(charsSheet, cursor);                          // new header starts expanded (checkbox = TRUE)
     cursor += 1;
     p.chars.forEach(c => {
@@ -1031,9 +1080,10 @@ function rebuildAccount_(charsSheet, bisSheet, account, entries, nameMap, opts) 
 //     gear/locks — which sections to write per character
 //     reorder    — "Update All" path: full group-aware rebuild via rebuildAccount_
 //                  (creates "Account - Realm" groups + characters, orders them to
-//                  match the export, preserves unexported chars, leaves other
-//                  accounts in place). When false (partial buttons), only existing
-//                  blocks are updated in place — no create / group / reorder.
+//                  match the export, DELETES this account's chars missing from the
+//                  export — confirmed first — and leaves other accounts in place).
+//                  When false (partial buttons), only existing blocks are updated in
+//                  place — no create / group / reorder / delete.
 function runUpdate_(opts) {
   const ui   = SpreadsheetApp.getUi();
   const lock = LockService.getScriptLock();
@@ -1069,25 +1119,47 @@ function runUpdate_(opts) {
       return;
     }
 
+    // One account alias per export (account-wide SavedVariable). Characters are
+    // grouped under an "Account - Realm" header carrying this alias.
+    const account = parsed.account;
+
+    // Pre-flight: "Update All" DELETES this account's characters that are missing from
+    // the export. List them and require confirmation BEFORE any writes/snapshot — a
+    // cancel here is a true no-op. (Only "Update All" deletes; partial buttons never do.)
+    if (opts.reorder) {
+      const toDelete = findDeletions_(charsSheet, account, parsed.entries);
+      if (toDelete.length > 0) {
+        const list = toDelete.slice(0, 15)
+          .map(d => "• " + d.name + " (" + (d.spec || "?") + ")" + (d.realm ? " [" + d.realm + "]" : ""))
+          .join("\n");
+        const more = toDelete.length > 15 ? "\n…and " + (toDelete.length - 15) + " more" : "";
+        const resp = ui.alert(opts.label + " — confirm deletions",
+          toDelete.length + " character" + (toDelete.length === 1 ? "" : "s") + ' under "' + account + '" '
+          + "are not in this export and will be DELETED:\n\n" + list + more + "\n\nProceed?",
+          ui.ButtonSet.YES_NO);
+        if (resp !== ui.Button.YES) {
+          ui.alert(opts.label, "Cancelled. Nothing was changed.", ui.ButtonSet.OK);
+          return;
+        }
+      }
+    }
+
     // Snapshot "My Characters" BEFORE any writes so "Undo Last Changes" can revert it.
     snapshotForUndo_(ss);
 
     // Only fetch Wowhead names when gear is actually being written.
     const nameMap = opts.gear ? resolveItemNames_(collectOtherIds_(parsed.entries)) : {};
 
-    // One account alias per export (account-wide SavedVariable). Characters are
-    // grouped under an "Account - Realm" header carrying this alias.
-    const account = parsed.account;
-
-    let updated = 0, created = 0, skipped = 0;
+    let updated = 0, created = 0, deleted = 0, skipped = 0;
     const problems = [];
 
     if (opts.reorder) {
       // "Update All" — full group-aware rebuild: create/order "Account - Realm"
-      // groups + their characters to match the export, preserve unexported chars,
-      // leave other accounts in place. Writes gear/locks/UwU/date per entry.
+      // groups + their characters to match the export, delete this account's chars
+      // missing from the export, leave other accounts in place. Writes
+      // gear/locks/UwU/date per entry.
       const r = rebuildAccount_(charsSheet, bisSheet, account, parsed.entries, nameMap, opts);
-      updated = r.updated; created = r.created;
+      updated = r.updated; created = r.created; deleted = r.deleted;
       r.problems.forEach(p => problems.push(p));
     } else {
       // Partial buttons (Equipment / Instance Locks only) — update existing blocks
@@ -1110,12 +1182,14 @@ function runUpdate_(opts) {
 
     // On a run that changed something: log the update (type + time in "Your last
     // Updates", full string in the Last box) and clear the paste cell.
-    if (updated + created > 0) {
+    if (updated + created + deleted > 0) {
       recordUpdate_(ss, opts.logType, raw);
       ss.getSheetByName(SHEET_ADDON).getRange(PASTE_CELL).clearContent();
     }
 
-    const summary = `Updated ${updated}, created ${created}` + (skipped ? `, skipped ${skipped}` : "");
+    const summary = `Updated ${updated}, created ${created}`
+      + (deleted ? `, deleted ${deleted}` : "")
+      + (skipped ? `, skipped ${skipped}` : "");
     if (problems.length) {
       ui.alert(opts.label + " — done with warnings",
         summary + "\n\n" + problems.slice(0, 10).join("\n"), ui.ButtonSet.OK);

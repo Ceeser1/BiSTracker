@@ -137,6 +137,12 @@ function BiSTracker_ShowExportFrame()
         local accLabel = (BiSTrackerDB.accountAlias or ""):gsub("[;|~]", " ")
         accLabel = Trim(accLabel)
         if accLabel == "" then accLabel = "NoAccName" end
+        -- A space in the alias visually breaks the single-line export string in the
+        -- sheet's paste/record textbox, so encode every space as "^" (a single-byte
+        -- ASCII char, so the checksum still matches). The importer decodes "^" back
+        -- to a space. "^" is reserved: a literal "^" in the alias is normalized to a
+        -- space first so decoding is unambiguous.
+        accLabel = accLabel:gsub("%^", " "):gsub(" ", "^")
         local payload = accLabel .. ";" .. table.concat(charStrings, "|")
         exportStr = payload .. "~" .. tostring(ExportChecksum(EXPORT_SECRET .. payload))
     else
