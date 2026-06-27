@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Companion Google Apps Script — tracked in the repo, but excluded from
+# release archives (git archive / GitHub "Download ZIP" + Source code assets).
+"BisTracker Sheet Script.gs" export-ignore
