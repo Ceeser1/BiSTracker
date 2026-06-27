@@ -256,17 +256,16 @@ function BiSTracker_ShowMainFrame()
     f.mlSettingsBtn    = mlSettingsBtn
     f.exportBtn        = exportBtn
 
-    -- Column headers
-    local COL   = { 12, 126, 260, 304, 344, 384, 424, 464, 503, 553 }
-    local HEADS = { "Character", "Spec", "ICC25", "ICC10", "RS25", "RS10", "TOC25", "TOC10", "BiS", "GS" }
+    -- Column headers. CWIDTH: cols 3-10 are fixed-width + centered; 1-2 keep defaults.
+    local COL    = { 12, 126, 260, 304, 344, 384, 424, 464, 503, 553 }
+    local HEADS  = { "Character", "Spec", "ICC25", "ICC10", "RS25", "RS10", "TOC25", "TOC10", "BiS", "GS" }
+    local CWIDTH = { [3]=38, [4]=38, [5]=38, [6]=38, [7]=38, [8]=38, [9]=50, [10]=50 }
     f.headerLabels = {}
     for i = 1, #HEADS do
         local lbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lbl:SetPoint("TOPLEFT", f, "TOPLEFT", COL[i], -42)
         lbl:SetText(COLOR.legendary .. HEADS[i] .. "|r")
-        if i >= 3 and i <= 8 then lbl:SetWidth(38); lbl:SetJustifyH("CENTER") end
-        if i == 9  then lbl:SetWidth(50); lbl:SetJustifyH("CENTER") end
-        if i == 10 then lbl:SetWidth(50); lbl:SetJustifyH("CENTER") end
+        if CWIDTH[i] then lbl:SetWidth(CWIDTH[i]); lbl:SetJustifyH("CENTER") end
         table.insert(f.headerLabels, lbl)
     end
 
@@ -279,13 +278,15 @@ function BiSTracker_ShowMainFrame()
     -- Edit mode column headers (hidden until Edit is activated)
     local EDIT_COL   = { 10, 195, 336, 569 }
     local EDIT_HEADS = { "Character", "Spec", "BiS", "Remove?" }
+    local EDIT_WIDTH = { 180, 180, 50, 67 }
+    local EDIT_JUST  = { "LEFT", "LEFT", "CENTER", "CENTER" }
     f.editHeaderLabels = {}
     for i = 1, #EDIT_HEADS do
         local lbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lbl:SetPoint("TOPLEFT", f, "TOPLEFT", EDIT_COL[i], -42)
         lbl:SetText(COLOR.legendary .. EDIT_HEADS[i] .. "|r")
-        lbl:SetWidth(i <= 2 and 180 or (i == 3 and 50 or 67))
-        lbl:SetJustifyH(i >= 3 and "CENTER" or "LEFT")
+        lbl:SetWidth(EDIT_WIDTH[i])
+        lbl:SetJustifyH(EDIT_JUST[i])
         lbl:Hide()
         table.insert(f.editHeaderLabels, lbl)
     end
@@ -342,19 +343,17 @@ local HEADER_COL = { 0, 114, 248, 292, 332, 372, 412, 452, 489, 539 }
 
 local mainEmptyRow = nil
 
--- Pooled realm-group header row for the Main list (dark grey bar, centered realm
--- name, collapse toggle at the right).
+-- Pooled Main-list realm header (dark grey bar, realm name, collapse toggle).
 local function GetOrCreateRealmHeader(idx)
     local rh = realmHeaderPool[idx]
     if not rh then
         rh = CreateFrame("Frame", nil, mainFrame.content)
         rh.bg = rh:CreateTexture(nil, "BACKGROUND"); rh.bg:SetAllPoints()
-        -- Collapse toggle on the left (same offset as the character-name column) to
-        -- keep it distinct from the per-character toggle on the right.
+        -- Collapse toggle on the left (distinct from the per-character toggle on the right).
         rh.toggleBtn = CreateFrame("Button", nil, rh, "UIPanelButtonTemplate")
         rh.toggleBtn:SetWidth(26); rh.toggleBtn:SetHeight(18)
         rh.toggleBtn:SetPoint("LEFT", rh, "LEFT", 4, 0)
-        -- Realm name floats left next to the toggle (6px gap).
+        -- Realm name floats left next to the toggle.
         rh.lbl = rh:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         rh.lbl:SetPoint("LEFT", rh.toggleBtn, "RIGHT", 6, 0); rh.lbl:SetJustifyH("LEFT")
         realmHeaderPool[idx] = rh
@@ -425,14 +424,12 @@ function BiSTracker_RefreshList()
             row = CreateFrame("Frame", nil, content)
             row.bg = row:CreateTexture(nil, "BACKGROUND"); row.bg:SetAllPoints()
             row.lbls = {}
+            local RW = { 60, 121, 36, 36, 36, 36, 36, 36, 50, 50 }  -- per-column widths; cols 1-2 left, rest centered
             for i = 1, 10 do
                 local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
                 lbl:SetPoint("LEFT", row, "LEFT", HEADER_COL[i] + 4, 0)
-                if i == 1  then lbl:SetWidth(60);  lbl:SetJustifyH("LEFT")   end
-                if i == 2  then lbl:SetWidth(121); lbl:SetJustifyH("LEFT")   end
-                if i >= 3 and i <= 8 then lbl:SetWidth(36); lbl:SetJustifyH("CENTER") end
-                if i == 9  then lbl:SetWidth(50);  lbl:SetJustifyH("CENTER") end
-                if i == 10 then lbl:SetWidth(50);  lbl:SetJustifyH("CENTER") end
+                lbl:SetWidth(RW[i])
+                lbl:SetJustifyH(i <= 2 and "LEFT" or "CENTER")
                 row.lbls[i] = lbl
             end
             -- Lock status icons for columns 3-8

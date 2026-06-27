@@ -42,9 +42,8 @@ function CreateMinimapButton()
         btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
     end
 
-    -- Restore the saved position. Called at creation AND again on PLAYER_ENTERING_WORLD,
-    -- because at ADDON_LOADED the minimap's final width and shape (GetMinimapShape, set by
-    -- other addons that load later) aren't reliable yet, which would land the icon off-spot.
+    -- Restore saved position; re-run on PLAYER_ENTERING_WORLD (minimap width/shape are
+    -- unreliable at ADDON_LOADED).
     local function ApplyPosition()
         if BiSTrackerDB.minimapFree and BiSTrackerDB.minimapFreeX then
             btn:SetParent(UIParent)
@@ -143,8 +142,7 @@ function CreateMinimapButton()
     -- Column header row
     local HDR_Y = -(TIP_PAD + TITLE_H + 2)
 
-    -- Instance-lock header widgets (column titles + separator). Collected so they can be
-    -- hidden together when the "Minimap Popup" setting only allows the title row.
+    -- Lock-header widgets (titles + separator); hidden together when "Minimap Popup" is off.
     local lockHeaderWidgets = {}
 
     local hdrName = tipFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")

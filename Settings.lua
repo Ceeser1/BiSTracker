@@ -66,9 +66,8 @@ end
 -- ============================================================
 -- ANNOUNCER ELECTION + ADDON PRESENCE
 -- ============================================================
--- One raid member is elected to react/announce so multiple addon users don't
--- all respond to the same posted item. Hierarchy: Raid Lead > Master Looter
--- (only if Assist+) > any Assist. Only candidates running BiSTracker qualify.
+-- One member is elected to react/announce so multiple addon users don't all respond.
+-- Hierarchy: Raid Lead > Master Looter (Assist+) > Assist; only BiSTracker users qualify.
 
 -- Throttled outgoing addon-message queue (avoid burst -> server spam disconnect).
 local outQueue   = {}
@@ -98,8 +97,7 @@ local function HasAddon(name)
     return addonUsers[name] == true
 end
 
--- True if a player has opted out of being the announcer ("Skip Announcer" setting).
--- Self reads the live setting; others are tracked via SKIP/HELLO addon messages.
+-- Opted out of being announcer: self reads the live setting, others from SKIP/HELLO.
 local function SkipsAnnouncer(name)
     if name == UnitName("player") then return LS().skipAnnouncer and true or false end
     return skipUsers[name] == true
@@ -146,11 +144,8 @@ local function ElectAnnouncer()
     return nil
 end
 
--- True if announcer candidate `a` is strictly more authoritative than `b`, using the
--- same hierarchy ElectAnnouncer applies (Raid Lead > ML+assist > Assist, ties broken by
--- lowest raid index). This relies only on rank / master-looter / roster order, which
--- every client sees identically — so it can validate an ANN broadcast sent by a member
--- that just came online and hasn't yet learned who else is running the addon.
+-- True if candidate `a` outranks `b` by ElectAnnouncer's hierarchy (rank/ML/roster index
+-- only — values every client shares), so it can validate an ANN from a just-joined member.
 local function AnnouncerBeats(a, b)
     local function priority(name)
         local rank = RankOf(name)
@@ -200,9 +195,7 @@ function BiSTracker_RefreshAnnouncer()
     end
 end
 
--- Called 4s after entering world: announce presence and elect.
--- A player with "Skip Announcer" set advertises SKIP instead of HELLO so other clients
--- exclude it from the election.
+-- Called 4s after entering world: advertise presence (SKIP if opted out, else HELLO) and elect.
 function BiSTracker_AnnouncerInit()
     addonUsers[UnitName("player")] = true
     if GetNumRaidMembers() > 0 then
@@ -224,18 +217,15 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
             BiSTracker_RefreshAnnouncer()   -- re-elect; broadcasts ANN to the whole raid if I win (newcomer included)
         end
     elseif msg == "SKIP" then
-        -- Sender has "Skip Announcer" on: record it and re-elect. If they were the
-        -- announcer, a new winner emerges and re-broadcasts ANN (which also re-syncs sender).
+        -- Sender opted out: record and re-elect (a new winner re-broadcasts ANN).
         skipUsers[sender] = true
         BiSTracker_RefreshAnnouncer()
     elseif msg:sub(1, 4) == "ANN:" then
         local name = msg:sub(5)
         if name ~= "" then
             addonUsers[name] = true
-            -- A member that just came online may self-elect before it learns that
-            -- higher-ranked players also run the addon. Don't blindly trust the claim:
-            -- if our own election names a more authoritative announcer, re-assert it
-            -- (RefreshAnnouncer re-broadcasts ANN only if the winner is us).
+            -- Don't blindly trust a just-joined member's claim: if our election names a
+            -- more authoritative announcer, re-assert it (re-broadcasts ANN only if it's us).
             local mine = ElectAnnouncer()
             if mine and mine ~= name and AnnouncerBeats(mine, name) then
                 BiSTracker_RefreshAnnouncer()
@@ -244,8 +234,7 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
             end
         end
     elseif msg == "REQ" then
-        -- A newcomer is asking who the announcer is. Only the announcer answers,
-        -- re-broadcasting to the whole raid so everyone re-syncs.
+        -- Newcomer asking who the announcer is; only the announcer answers (whole raid re-syncs).
         if currentAnnouncer == UnitName("player") then
             SendAddon("ANN:" .. currentAnnouncer)
         end
@@ -320,9 +309,8 @@ local function SendInChannel(msg, channel)
     end
 end
 
--- Determine the personal upgrade label for a posted item vs my current gear.
--- bisEntries: bisResults[mySpec] from LookupItemInBiS (one per matched BiS-list entry).
--- Returns "BiS" | "Alt BiS" | "pre-BiS" | "Alt pre-BiS", or nil if not an upgrade.
+-- Personal upgrade label for a posted item vs my gear: "BiS"|"Alt BiS"|"pre-BiS"|
+-- "Alt pre-BiS", or nil if not an upgrade. bisEntries = bisResults[mySpec].
 local function GetNotifyUpgradeType(bisEntries, myGear, itemName, postedIlvl)
     local needle = Trim(itemName)
 
@@ -331,8 +319,7 @@ local function GetNotifyUpgradeType(bisEntries, myGear, itemName, postedIlvl)
         if slotName == "Trinket" then return myGear["Trinket 1"], myGear["Trinket 2"] end
         return myGear[slotName]
     end
-    -- The equipped item the posted one would replace: an empty slot wins (nil),
-    -- otherwise the weaker (lower ilvl) of the two for ring/trinket.
+    -- Item the posted one would replace: empty slot wins (nil), else the weaker ring/trinket.
     local function replaceTarget(a, b, twoSlot)
         if twoSlot then
             if not a or not b then return nil end
@@ -400,8 +387,7 @@ end
 function HandlePostedItem(sender, message)
     local ls = LS()
 
-    -- Capture the FULL link incl. the |cff… colour wrapper and trailing |r.
-    -- Without them SendChatMessage rejects the relink as an invalid escape code.
+    -- Capture the FULL link (colour wrapper + |r); SendChatMessage rejects a bare relink.
     local itemLink = message:match("|c%x+|Hitem:.-|h%[.-%]|h|r")
     if not itemLink then return end
     local itemName = itemLink:match("%[(.-)%]")
@@ -419,8 +405,7 @@ function HandlePostedItem(sender, message)
     lastPostedItem = itemName
     lastPostedTime = now
 
-    -- Always-notify-self: fires regardless of reactTo/announce/inform settings,
-    -- but only when the poster is Raid Lead, Master Looter or an Assist.
+    -- Always-notify-self: independent of announcer role, but only for officer posters.
     if ls.notifyMySpec then
         if PosterIsOfficer(sender) then
             local myKey  = GetCharKey()
@@ -437,11 +422,9 @@ function HandlePostedItem(sender, message)
         end
     end
 
-    -- Announce + Inform: a player who opted out ("Never be Announcer") never reacts,
-    -- even when nobody is currently elected (currentAnnouncer == nil).
+    -- Opted out ("Never be Announcer"): never react, even when no one is elected.
     if LS().skipAnnouncer then return end
-    -- Otherwise only the elected announcer reacts (so multiple addon users in the raid
-    -- don't all respond to the same item).
+    -- Otherwise only the elected announcer reacts (so addon users don't all respond).
     if currentAnnouncer and currentAnnouncer ~= UnitName("player") then return end
 
     -- Announce + Inform: react only to officer-posted loot (the announcer handles "who").
@@ -809,8 +792,8 @@ function BiSTracker_RefreshRaidList()
     end
 
     if rowIdx == 0 then
-        -- Dedicated frame (NOT a pool slot) so reusing pool rows for real members
-        -- never inherits this stripped-down layout that lacks a toggleBtn.
+        -- Dedicated frame (not a pool slot) so reused member rows never inherit this
+        -- stripped layout that lacks a toggleBtn.
         local row = mlContent.emptyRaidRow
         if not row then
             row = CreateFrame("Frame", nil, mlContent)
@@ -901,8 +884,7 @@ function BuildLootSettingsUI(c)
     local expBody = CreateFrame("Frame", nil, c)
     expBody:SetWidth(636); expBody:SetHeight(EXP_BODY_H)
 
-    -- Account Alias row — label, input box and warning all vertically centered on
-    -- one line, each anchored to the previous element's edge with the same 12px gap.
+    -- Account Alias row: label, input box and warning on one line, 12px gaps.
     local aliasLabel = expBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     aliasLabel:SetPoint("LEFT", expBody, "TOPLEFT", 12, -22)
     aliasLabel:SetText(COLOR.white .. "Account Alias:|r")
@@ -913,8 +895,7 @@ function BuildLootSettingsUI(c)
     aliasBox:SetPoint("LEFT", aliasLabel, "RIGHT", 12, 0)
     aliasBox:SetMaxLetters(20)
 
-    -- Greyed "Main Account" placeholder shown only when the box is empty (3.3.5a
-    -- EditBoxes have no native placeholder).
+    -- Greyed placeholder shown only when empty (3.3.5a EditBoxes have no native one).
     local aliasPlaceholder = aliasBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     aliasPlaceholder:SetPoint("CENTER", aliasBox, "CENTER", 0, -1)
     aliasPlaceholder:SetText(COLOR.grey .. "Main Account?|r")
@@ -1054,8 +1035,7 @@ function BuildLootSettingsUI(c)
     raidSep:SetPoint("TOPRIGHT", raidHdrFrame, "TOPRIGHT",  -5, -40)
     raidSep:SetTexture(0.3, 0.3, 0.3, 0.8)
 
-    -- Layout: stack General + Announce sections (each collapsible), then the raid header.
-    -- Collapsing a section hides its body and slides everything below it up.
+    -- Stack the collapsible sections, then the raid header; collapsing slides the rest up.
     local function UpdateLayout()
         local y = 0
         genHeader:ClearAllPoints();  genHeader:SetPoint("TOPLEFT", c, "TOPLEFT", 0, y)
@@ -1288,8 +1268,7 @@ do
         return false
     end
 
-    -- Removes a player from the queue and cancels an in-progress inspection of them.
-    -- Returns true if a queued entry was removed OR the current inspection was cancelled.
+    -- Remove a player from the queue / cancel their in-progress inspection; true if either happened.
     local function RemoveFromQueue(name)
         local newQueue = {}
         local removed = false
@@ -1317,8 +1296,7 @@ do
         end
     end
 
-    -- Called when the queue empties after an inspection or an offline-skip.
-    -- A full scan restarts the 5-min countdown; an individual scan lets it keep running.
+    -- On queue empty: a full scan restarts the 5-min countdown; an individual scan keeps it.
     local function OnQueueDrained()
         if fullScanInProgress then
             fullScanInProgress = false
@@ -1358,8 +1336,7 @@ do
         end
     end
 
-    -- Polls raid roster connection status and fires HandleConnectionChange on transitions.
-    -- Needed because UNIT_CONNECTION does not exist in WotLK 3.3.5a.
+    -- Poll roster connection status (no UNIT_CONNECTION in 3.3.5a); fire on transitions.
     local function PollConnectionChanges()
         local playerName = UnitName("player")
         local seen = {}
@@ -1559,9 +1536,8 @@ do
             return
         end
 
-        -- 5-minute countdown to next full rebuild. Runs concurrently with individual
-        -- scans (it only resets when a full scan actually starts/finishes), so a single
-        -- joiner doesn't push the next full sweep back. Falls through to service the queue.
+        -- 5-min countdown to the next full rebuild; runs alongside individual scans so a
+        -- single joiner doesn't push the next full sweep back.
         if rebuildActive then
             rebuildTimer = rebuildTimer + elapsed
             if rebuildTimer >= REBUILD_INTERVAL and #raidScanQueue == 0 and currentUnit == nil then

@@ -8,23 +8,20 @@ local editEmptyRow        = nil
 
 local REALM_HDR_H = 22           -- height of a realm-group header row
 
--- Pooled realm-group header for the Edit list: dark grey bar, centered realm name,
--- Up/Down buttons to move the whole realm (and all its characters) in export order.
+-- Pooled Edit-list realm header; Up/Down move the whole realm in export order.
 local function GetOrCreateEditRealmHeader(idx)
     local rh = editRealmHeaderPool[idx]
     if not rh then
         rh = CreateFrame("Frame", nil, mainFrame.editContent)
         rh.bg = rh:CreateTexture(nil, "BACKGROUND"); rh.bg:SetAllPoints()
-        -- Left side (same offset as the character-name column) to keep the realm
-        -- move controls distinct from the per-character Up/Down on the right.
+        -- Realm move controls on the left (distinct from per-character Up/Down on the right).
         rh.upBtn = CreateFrame("Button", nil, rh, "UIPanelButtonTemplate")
         rh.upBtn:SetWidth(26); rh.upBtn:SetHeight(18)
         rh.upBtn:SetPoint("LEFT", rh, "LEFT", 4, 0); rh.upBtn:SetText("^")
         rh.downBtn = CreateFrame("Button", nil, rh, "UIPanelButtonTemplate")
         rh.downBtn:SetWidth(26); rh.downBtn:SetHeight(18)
         rh.downBtn:SetPoint("LEFT", rh.upBtn, "RIGHT", 3, 0); rh.downBtn:SetText("v")
-        -- Realm name floats left next to the button(s); anchored per-refresh
-        -- (depends on whether the move buttons are shown).
+        -- Realm name floats left next to the button(s); anchored per-refresh.
         rh.lbl = rh:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         rh.lbl:SetJustifyH("LEFT")
         editRealmHeaderPool[idx] = rh
@@ -106,8 +103,7 @@ function BiSTracker_RefreshEditList()
         else
             rh.upBtn:Hide(); rh.downBtn:Hide()
         end
-        -- Realm name left-floated: next to the move buttons (6px gap) when shown,
-        -- else at the character-name offset (x=4) so it still floats left.
+        -- Realm name left-floated: next to the move buttons when shown, else at x=4.
         rh.lbl:ClearAllPoints()
         if multiRealm then
             rh.lbl:SetPoint("LEFT", rh.downBtn, "RIGHT", 6, 0)
@@ -175,8 +171,7 @@ function BiSTracker_RefreshEditList()
                 local bisTotal, hasBiS = GetBiSStatusForChar(entryKey, specName)
                 row.bisLbl:SetText(FormatBiSScore(hasBiS, bisTotal))
 
-                -- Up/Down buttons only on first spec row per character; they reorder
-                -- characters WITHIN this realm (swap order with the adjacent char).
+                -- Up/Down only on the first spec row; reorder chars within this realm.
                 local capturedKey = entryKey
                 if isFirstForChar then
                     local charIdx = 0

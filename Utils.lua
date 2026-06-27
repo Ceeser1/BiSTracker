@@ -39,10 +39,8 @@ function CountSpecs(char)
     return n
 end
 
--- Rank of the talent at a given grid position (tier=row, column), 1-indexed
--- from the top-left. talentIndex is a flat list, so we match on tier/column
--- (locale-independent, unlike the talent name). inspect=true reads the unit
--- currently under NotifyInspect. Returns 0 if not found / no points.
+-- Talent rank at a grid position (tier=row, column); locale-independent. inspect=true
+-- reads the NotifyInspect target. 0 if not found.
 function GetTalentRankAt(tab, tier, column, inspect)
     for i = 1, GetNumTalents(tab, inspect) do
         local _, _, t, c, rank = GetTalentInfo(tab, i, inspect)
@@ -51,15 +49,13 @@ function GetTalentRankAt(tab, tier, column, inspect)
     return 0
 end
 
--- DK Blood tree (tab 1) doesn't say Tank vs DPS by points alone: a DPS build
--- takes Dancing Rune Weapon (tier 11, col 2, the 51-pointer); a tank skips it.
+-- DK Blood: DPS takes Dancing Rune Weapon (tier 11, col 2); a tank skips it.
 function ResolveBloodDK(inspect)
     if GetTalentRankAt(1, 11, 2, inspect) > 0 then return "Blood DK Dps" end
     return "Blood DK Tank"
 end
 
--- Shaman Enhancement tree (tab 2): a real Enhancement build takes Feral Spirit
--- (tier 11, col 2, the 51-pointer); a Spellhance build skips it. Skilled => Enhancement.
+-- Shaman tab 2: Enhancement takes Feral Spirit (tier 11, col 2); Spellhance skips it.
 function ResolveEnhanceShaman(inspect)
     if GetTalentRankAt(2, 11, 2, inspect) > 0 then return "Enhancement Shaman" end
     return "Spellhance Shaman"
@@ -125,9 +121,7 @@ end
 -- WEEKLY RESET
 -- ============================================================
 
--- Returns the Unix timestamp (UTC) of the most recent Wednesday 4:00 AM GMT.
--- time() in WoW returns a UTC Unix timestamp, so no timezone conversion needed.
--- Verified: Jan 1, 1970 was a Thursday, so Wednesday = offset 6 in (t/86400 % 7).
+-- Unix timestamp of the most recent Wednesday 4:00 AM GMT (time() is already UTC).
 function GetLastWeeklyReset(now)
     now = now or time()
     local RESET_SECS = 4 * 3600  -- 4:00 AM = 14400 s into the day
@@ -143,8 +137,7 @@ function GetNextWeeklyReset(now)
     return GetLastWeeklyReset(now) + 7 * 86400
 end
 
--- On login: if a weekly reset has occurred since the last stored reset,
--- clear all character lock data and update the stored timestamps.
+-- On login: clear all char locks if a weekly reset passed since the stored one.
 function CheckAndApplyWeeklyReset()
     local now       = time()
     local lastReset = GetLastWeeklyReset(now)
@@ -229,8 +222,7 @@ function FormatBiSScore(hasBiS, total)
     return "|cff" .. col .. hasBiS .. "/" .. total .. "|r"
 end
 
--- Splits a spec's BiS entries into the three groups the two-column detail panels render:
--- weapons (column 1 top), col1 armor (Head–Wrist), and everything else (column 2).
+-- Split a spec's BiS entries into the detail-panel groups: weapons, col1 armor, col2.
 function SplitBiSColumns(specData)
     local weapons, armor, col2 = {}, {}, {}
     for _, entry in ipairs(specData) do
@@ -256,16 +248,13 @@ function EnsureCharOrders()
     BiSTrackerDB.nextCharId = maxOrder
 end
 
--- Realm portion of a char key ("Name-Realm"). WoW names contain no "-", so the
--- realm is everything after the FIRST "-". "" if the key has no realm part.
+-- Realm portion of a char key ("Name-Realm") — everything after the first "-".
 function GetRealmFromKey(key)
     return (key and key:match("^.-%-(.+)$")) or ""
 end
 
--- Ensure BiSTrackerDB.realmOrder has a display index for every realm currently
--- present among tracked characters. New realms are appended after the current max,
--- ordered by the lowest char.order they contain (so first-seen layout is sensible).
--- realmOrder drives realm grouping order in the Main/Edit views and the export.
+-- Assign a realmOrder index to every realm in use; new ones appended after the max,
+-- ordered by their lowest char.order. Drives realm grouping in Main/Edit/export.
 function EnsureRealmOrders()
     BiSTrackerDB.realmOrder = BiSTrackerDB.realmOrder or {}
     local ro     = BiSTrackerDB.realmOrder
@@ -290,8 +279,7 @@ function EnsureRealmOrders()
     end
 end
 
--- Realms present among tracked characters, sorted by realmOrder. Used by the Main
--- list, Edit list and the export so all three agree on realm grouping order.
+-- Realms in use, sorted by realmOrder (Main list, Edit list and export all agree).
 function GetSortedRealms()
     EnsureRealmOrders()
     local ro     = BiSTrackerDB.realmOrder
@@ -333,11 +321,8 @@ function GearScoreItem(quality, ilvl, equipLoc)
     return (score > 0) and score or 0
 end
 
--- Total GearScore for a set of gear.
---   own == true  : reads the logged-in player's live equipped inventory (class auto-detected).
---   own == false : scores the passed-in `gear` table (keyed by slot name, from a raid scan)
---                  using its stored quality/ilvl/equipLoc, with `class`/`spec` driving the
---                  hunter and Titan's Grip weapon adjustments.
+-- Total GearScore. own=true reads the player's live inventory; own=false scores the
+-- passed `gear` table (raid scan), with class/spec driving hunter/Titan's Grip weapon mods.
 function ComputeGearScore(own, class, spec, gear)
     if own == nil then own = true end
 
@@ -362,8 +347,7 @@ function ComputeGearScore(own, class, spec, gear)
             end
         end
     else
-        -- Can't read a scanned player's equip locations reliably; a Fury Warrior
-        -- must have Titan's Grip, so apply the same weapon penalty.
+        -- Can't read a scanned player's equip locs; Fury must have Titan's Grip.
         local isFury = (spec == "Fury Warrior")
         if isFury then titanGrip = 0.5 end
     end
@@ -398,8 +382,7 @@ function ComputeGearScore(own, class, spec, gear)
     return math.floor(total)
 end
 
--- Returns a 6-char hex color string (no #) for the given GearScore value.
--- Linearly interpolates between GS_COLOR_STOPS so there are no hard step transitions.
+-- 6-char hex color (no #) for a GearScore, interpolated between GS_COLOR_STOPS.
 function GetGearScoreColor(gs)
     gs = gs or 0
     local stops = GS_COLOR_STOPS
@@ -426,12 +409,8 @@ end
 -- GEAR SCAN (spec-aware)
 -- ============================================================
 
--- Reads one of the player's equipped slots. Returns (entry, resolved):
---   entry = nil, resolved = true   -> slot is empty (caller should clear it)
---   entry = nil, resolved = false  -> link/info not ready yet (caller should retry)
---   entry = table, resolved = bool -> item found; resolved is false until GetItemInfo
---                                     caches the ilvl (needed for BiS check + GearScore).
--- The name comes from the link string (available immediately) so name-matching works at once.
+-- Read an equipped slot. Returns (entry, resolved): nil/true = empty, nil/false = retry,
+-- table/false = item found but ilvl not cached yet (name is read from the link at once).
 local function ReadPlayerSlot(slotId)
     if not GetInventoryItemID("player", slotId) then return nil, true end
     local link = GetInventoryItemLink("player", slotId)
@@ -532,8 +511,7 @@ function RegisterCharacter()
         char.activeSpec = spec
     end
 
-    -- Automatic scans are gated by the General settings; manual /bis locks and /bis scan
-    -- always work regardless.
+    -- Auto-scans gated by General settings; manual /bis locks and /bis scan always work.
     if LS().autoScanLocks then ScanInstanceLocks() end
     if LS().autoScanGear  then ScanGear() end
 end

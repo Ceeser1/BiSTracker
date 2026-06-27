@@ -30,8 +30,7 @@ WEAPON_SLOTS = {
     Crossbow=true, Sigil=true, Idol=true, Totem=true, Libram=true, Wand=true, Ranged=true
 }
 
--- GearScore (Mirrikat45 formula, ported from LibGearScore-1.0 for 3.3.5a).
--- Slot weight per equip location (GetItemInfo's itemEquipLoc string).
+-- GearScore (Mirrikat45 / LibGearScore-1.0 port). Slot weight per equip location.
 GS_SCALE    = 1.8618
 GS_SLOT_MOD = {
     INVTYPE_RELIC=0.3164,          INVTYPE_TRINKET=0.5625,        INVTYPE_2HWEAPON=2.0,
@@ -48,8 +47,7 @@ GS_FORMULA = {
     A = { [4]={A=91.45, B=0.65},  [3]={A=81.375, B=0.8125}, [2]={A=73.0, B=1.0} },                       -- ilvl > 120
     B = { [4]={A=26.0,  B=1.2},   [3]={A=0.75,   B=1.8},    [2]={A=8.0,  B=2.0}, [1]={A=0.0, B=2.25} },  -- ilvl <= 120
 }
--- Color gradient anchors for GetGearScoreColor(). Interpolated linearly between stops.
--- RGB components are 0-255 integers.
+-- Color gradient anchors for GetGearScoreColor() (RGB 0-255, interpolated linearly).
 GS_COLOR_STOPS = {
     { gs=0,    r=154, g=154, b=154 },  -- Grey
     { gs=1000, r=255, g=255, b=255 },  -- White
@@ -94,9 +92,7 @@ SPEC_COLORS = {
     ["Restoration Shaman"]="0070dd", ["Spellhance Shaman"]="0070dd",
 }
 
--- Shared secret for the export integrity checksum. Must match EXPORT_SECRET in the
--- spreadsheet's Apps Script EXACTLY (change in both, or imports will be rejected).
--- Note: the addon source is readable, so this only deters casual tampering.
+-- Export checksum secret. Must match EXPORT_SECRET in the sheet's Apps Script EXACTLY.
 EXPORT_SECRET = "BiSTrk!2026#warmane"
 
 CLASS_ORDER = {

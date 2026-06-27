@@ -4,17 +4,13 @@
 
 local exportFrame = nil
 
--- Every gear slot is exported as the equipped item's ID ("0"=empty). BiS/Alt/Other is
--- decided on the SHEET by matching this ID against each row's Wowhead item=<id> link,
--- so the addon's BiS-row order and the sheet's row order don't have to agree.
--- Strip the export delimiters from a free-text item name so they can't break parsing.
+-- Strip export delimiters from a free-text item name so they can't break parsing.
 local function SanitizeName(name)
     return (tostring(name or ""):gsub("[%-;|~]", " "))  -- "~" is the checksum delimiter
 end
 
--- Keyed polynomial checksum over a string (ASCII payload). Must match checksum_()
--- in the Apps Script importer. P = 2^31-1 keeps h*257 within Lua's exact double
--- range, so the result is identical to the JS computation.
+-- Keyed polynomial checksum. Must match the Apps Script importer's checksum_()
+-- (P = 2^31-1 keeps h*257 in Lua's exact double range, so Lua and JS agree).
 local function ExportChecksum(s)
     local P, h = 2147483647, 0
     for i = 1, #s do
@@ -23,11 +19,8 @@ local function ExportChecksum(s)
     return h
 end
 
--- Export value for one gear slot: the equipped item's ID ("0" if the slot is empty; the
--- sanitized name only as a fallback when an item somehow has no ID). Never "1"/"2" — the
--- sheet decides BiS/Alt/Other by matching this ID against each row's bis/alt Wowhead
--- item=<id> link. Because matching is purely by item identity, Ring/Trinket's two-rows
--- case and the Shield/Ranged slot aliases are handled transparently on the sheet side.
+-- Export value for one slot: equipped item ID ("0" if empty; sanitized name only as a
+-- fallback when an item has no ID). The sheet decides BiS/Alt/Other by matching the ID.
 local function GetSlotExportValue(gearSlotName, gear)
     local it = gear and gear[gearSlotName]
     if not it then return "0" end
@@ -36,20 +29,14 @@ local function GetSlotExportValue(gearSlotName, gear)
 end
 
 function BiSTracker_ShowExportFrame()
-    -- Build export string: one entry per character-spec combination, separated by |
-    -- Each entry has 4 ";"-separated sections:
-    --   1) Name.Spec              ("." separated; class is implied by the spec)
-    --   2) 17 gear slots          ("-" separated, GEAR_SLOTS order)
-    --   3) GearScore              (integer; 0 if unknown/unscanned)
-    --   4) 6-bit lock binary      (ICC25,ICC10,RS25,RS10,TOC25,TOC10; 1=locked)
+    -- One "|"-joined entry per char-spec; each is 4 ";"-fields:
+    -- Name.Spec.Realm ; 17 gear IDs ("-") ; GearScore ; 6-bit lock binary.
     local charList = {}
     for charKey, charData in pairs(BiSTrackerDB.characters) do
         table.insert(charList, { key=charKey, data=charData })
     end
-    -- Export grouped by realm first (realmOrder — the order realms are arranged in
-    -- the Edit Chars list), then by each character's `order` within its realm. The
-    -- sheet importer groups characters into "Account - Realm" blocks in the order
-    -- each realm first appears, so this realm ordering drives the on-sheet layout.
+    -- Grouped by realmOrder, then char.order within each realm — drives the sheet's
+    -- "Account - Realm" block layout.
     EnsureRealmOrders()
     local realmOrder = BiSTrackerDB.realmOrder or {}
     table.sort(charList, function(a, b)
@@ -64,7 +51,7 @@ function BiSTracker_ShowExportFrame()
     local charStrings = {}
     for _, entry in ipairs(charList) do
         local d = entry.data
-        -- Sorted spec names for consistent ordering
+        -- Sorted spec names for stable ordering
         local specNames = {}
         if d.specs then
             for specName in pairs(d.specs) do table.insert(specNames, specName) end
@@ -72,19 +59,14 @@ function BiSTracker_ShowExportFrame()
         end
         for _, specName in ipairs(specNames) do
             local specEntry = d.specs[specName]
-            -- Spec fully written, spaces → "-" (e.g. "Marksman Hunter" → "Marksman-Hunter").
-            -- The importer reverses it by swapping "-" back to spaces.
+            -- Spec spaces → "-" (e.g. "Marksman Hunter" → "Marksman-Hunter"); importer reverses.
             local specLabel = (specName:gsub(" ", "-"))
 
-            -- Character info, "." separated (Name.Spec.Realm). Realm comes from the
-            -- char key ("Name-Realm"), fully written. Spec/realm "-" never collide
-            -- with the gear split; class is encoded in the spec name itself.
+            -- Name.Spec.Realm ("." separated); realm from the char key, class is in the spec.
             local realm = (entry.key:match("^.-%-(.+)$") or GetRealmName() or ""):gsub("[%.;|]", "")
             local info  = table.concat({ d.name or "?", specLabel, realm }, ".")
 
-            -- 17 gear slots, "-" separated (GEAR_SLOTS order). Every slot is the equipped
-            -- item's ID ("0" if empty); the sheet decides BiS/Alt/Other by matching each
-            -- ID to its row's Wowhead links (see GetSlotExportValue).
+            -- 17 gear slots (GEAR_SLOTS order), each the equipped item ID; "-" separated.
             local gear      = specEntry.gear or {}
             local gearParts = {}
             for _, slot in ipairs(GEAR_SLOTS) do
@@ -95,8 +77,7 @@ function BiSTracker_ShowExportFrame()
             -- GearScore of the last-scanned equipped gear (per-spec).
             local gsStr = tostring(math.floor((specEntry.gearScore or 0)))
 
-            -- 6-bit instance-lock binary (1=locked, 0=free).
-            -- Order follows INSTANCES: ICC25, ICC10, RS25, RS10, TOC25, TOC10.
+            -- 6-bit lock binary (1=locked), INSTANCES order: ICC25,ICC10,RS25,RS10,TOC25,TOC10.
             local locks     = d.locks
             local lockParts = {}
             for _, inst in ipairs(INSTANCES) do
@@ -108,22 +89,15 @@ function BiSTracker_ShowExportFrame()
         end
     end
 
-    -- Format: "<account>;<entries>~<checksum>". The account alias (or "NoAccName"
-    -- when unset) prefixes the export so the sheet can group characters by account
-    -- (split off at the FIRST ";"). The keyed checksum covers the whole
-    -- "<account>;<entries>" payload, so a tamper edit changes the hash and the
-    -- importer rejects it. Must match Apps Script checksum_(). Delimiter chars are
-    -- stripped from the alias so it can't break parsing.
+    -- Format: "<account>;<entries>~<checksum>". The alias (or "NoAccName") lets the sheet
+    -- group by account; the checksum covers the whole payload so tampered strings are rejected.
     local exportStr
     if #charStrings > 0 then
         local accLabel = (BiSTrackerDB.accountAlias or ""):gsub("[;|~]", " ")
         accLabel = Trim(accLabel)
         if accLabel == "" then accLabel = "NoAccName" end
-        -- A space in the alias visually breaks the single-line export string in the
-        -- sheet's paste/record textbox, so encode every space as "^" (a single-byte
-        -- ASCII char, so the checksum still matches). The importer decodes "^" back
-        -- to a space. "^" is reserved: a literal "^" in the alias is normalized to a
-        -- space first so decoding is unambiguous.
+        -- Encode spaces as "^" so a space can't visually split the export in the sheet
+        -- textbox (importer decodes "^"→space); a literal "^" is normalized to a space first.
         accLabel = accLabel:gsub("%^", " "):gsub(" ", "^")
         local payload = accLabel .. ";" .. table.concat(charStrings, "|")
         exportStr = payload .. "~" .. tostring(ExportChecksum(EXPORT_SECRET .. payload))
@@ -169,11 +143,8 @@ function BiSTracker_ShowExportFrame()
     hint:SetPoint("TOP", ef, "TOP", 0, -38)
     hint:SetText("|cffaaaaaaPress Ctrl+C to copy the text below|r")
 
-    -- A WoW EditBox does NOT clip its text/selection to its own frame, so a
-    -- multi-line HighlightText() draws the highlight out to the EditBox's full
-    -- width, spilling past the visible box. Hosting the EditBox in a ScrollFrame
-    -- clips it to the scroll window (highlight stays inside) and adds vertical
-    -- scrolling for long strings.
+    -- A WoW EditBox doesn't clip its selection, so HighlightText() spills past the box;
+    -- hosting it in a ScrollFrame clips it and adds scrolling for long strings.
     local sf = CreateFrame("ScrollFrame", "BiSTrackerExportScroll", ef, "UIPanelScrollFrameTemplate")
     sf:SetPoint("TOPLEFT", ef, "TOPLEFT", 16, -66)
     sf:SetWidth(504); sf:SetHeight(46)
@@ -188,9 +159,7 @@ function BiSTracker_ShowExportFrame()
     eb:SetTextColor(1, 1, 1) -- white text, readable over the dark window background
     eb:SetTextInsets(4, 4, 4, 4)
     eb:SetScript("OnEscapePressed", function() ef:Hide() end)
-    -- Standard Blizzard scrolling-edit helpers (FrameXML, present in 3.3.5a) keep the
-    -- scroll range correct and follow the cursor. Guarded so clipping still works
-    -- (ScrollFrame clips regardless) even if the helper is ever unavailable.
+    -- Blizzard scrolling-edit helpers keep the scroll range correct; guarded in case absent.
     if ScrollingEdit_OnTextChanged then
         eb:SetScript("OnTextChanged",   function(self) ScrollingEdit_OnTextChanged(self, sf) end)
         eb:SetScript("OnCursorChanged", ScrollingEdit_OnCursorChanged)

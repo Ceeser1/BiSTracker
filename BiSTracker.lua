@@ -1,5 +1,4 @@
--- BiSTracker v1.4.1
--- Author: Ceeser
+-- BiSTracker: core state, events, retry frame, slash commands
 
 local ADDON_NAME = "BiSTracker"
 
