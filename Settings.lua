@@ -831,7 +831,7 @@ end
 
 function BuildLootSettingsUI(c)
     local HEADER_H   = 22
-    local GEN_BODY_H = 138   -- General Settings body height (incl. trailing empty row)
+    local GEN_BODY_H = 160   -- General Settings body height (incl. empty row after notify + trailing empty row)
     local BODY_H     = 312   -- Announce Settings body height
     local RAID_H     = 44
 
@@ -878,21 +878,22 @@ function BuildLootSettingsUI(c)
     local cbNotifySelf = CB(genBody, 10, -8)
     FS(genBody, 28, -8, COLOR.lorange .. "Always notify me if a posted item is an upgrade for my current spec/gear|r")
 
-    local cbAutoScanGear = CB(genBody, 10, -30)
-    FS(genBody, 28,  -30, COLOR.white .. " Auto-Scan Gear|r")
-    FS(genBody, 190, -30, COLOR.grey .. "(If disabled you need to manually use /bis scan)|r")
+    -- empty row after "Always notify me..." before the scan toggles
+    local cbAutoScanGear = CB(genBody, 10, -52)
+    FS(genBody, 28,  -52, COLOR.white .. " Auto-Scan Gear|r")
+    FS(genBody, 190, -52, COLOR.grey .. "(If disabled you need to manually use /bis scan)|r")
 
-    local cbAutoScanLocks = CB(genBody, 10, -52)
-    FS(genBody, 28,  -52, COLOR.white .. " Auto-Scan Instance Locks|r")
-    FS(genBody, 190, -52, COLOR.grey .. "(If disabled you need to manually use /bis locks)|r")
+    local cbAutoScanLocks = CB(genBody, 10, -74)
+    FS(genBody, 28,  -74, COLOR.white .. " Auto-Scan Instance Locks|r")
+    FS(genBody, 190, -74, COLOR.grey .. "(If disabled you need to manually use /bis locks)|r")
 
-    local cbMinimapPopup = CB(genBody, 10, -74)
-    FS(genBody, 28,  -74, COLOR.white .. " Minimap Popup|r")
-    FS(genBody, 190, -74, COLOR.grey .. "(If disabled, hovering the minimap icon wont show your characters instance locks)|r")
+    local cbMinimapPopup = CB(genBody, 10, -96)
+    FS(genBody, 28,  -96, COLOR.white .. " Minimap Popup|r")
+    FS(genBody, 190, -96, COLOR.grey .. "(If disabled, hovering the minimap icon wont show your characters instance locks)|r")
 
-    local cbSkipAnnouncer = CB(genBody, 10, -96)
-    FS(genBody, 28,  -96, COLOR.white .. " Never be Announcer|r")
-    FS(genBody, 190, -96, COLOR.grey .. "(If enabled, you can never be the announcer of the raid)|r")
+    local cbSkipAnnouncer = CB(genBody, 10, -118)
+    FS(genBody, 28,  -118, COLOR.white .. " Never be Announcer|r")
+    FS(genBody, 190, -118, COLOR.grey .. "(If enabled, you can never be the announcer of the raid)|r")
 
     -- ============ Export Settings ============
     local EXP_BODY_H = 150
@@ -911,9 +912,20 @@ function BuildLootSettingsUI(c)
     aliasBox:SetWidth(159); aliasBox:SetHeight(20)   -- ~25% of the 636-wide body
     aliasBox:SetPoint("LEFT", aliasLabel, "RIGHT", 12, 0)
     aliasBox:SetMaxLetters(20)
-    aliasBox:SetScript("OnTextChanged",   function(self) BiSTrackerDB.accountAlias = self:GetText() end)
+
+    -- Greyed "Main Account" placeholder shown only when the box is empty (3.3.5a
+    -- EditBoxes have no native placeholder).
+    local aliasPlaceholder = aliasBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    aliasPlaceholder:SetPoint("CENTER", aliasBox, "CENTER", 0, -1)
+    aliasPlaceholder:SetText(COLOR.grey .. "Main Account?|r")
+    local function UpdateAliasPlaceholder()
+        if aliasBox:GetText() == "" then aliasPlaceholder:Show() else aliasPlaceholder:Hide() end
+    end
+
+    aliasBox:SetScript("OnTextChanged",   function(self) BiSTrackerDB.accountAlias = self:GetText(); UpdateAliasPlaceholder() end)
     aliasBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() end)
     aliasBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    UpdateAliasPlaceholder()
 
     local aliasWarn = expBody:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     aliasWarn:SetPoint("LEFT", aliasBox, "RIGHT", 12, 0)
