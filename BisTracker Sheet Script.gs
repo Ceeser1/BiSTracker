@@ -144,18 +144,16 @@ function parseGroupLabel_(label) {
 // ===== Menus =====
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu("BiS Chars Sheet Functions")
+  ui.createMenu("BisTracker Sheet Functions")
     .addItem("Collapse All (My Characters)", "collapseChars")
     .addItem("Expand All (My Characters)",   "expandChars")
     .addSeparator()
     .addItem("Collapse All (Classes BiS)",   "collapseBiS")
     .addItem("Expand All (Classes BiS)",     "expandBiS")
     .addSeparator()
-    .addItem("Update All (from Addon paste)", "updateAll")
-    .addItem("Update Equipment only",         "updateEquipment")
-    .addItem("Update Instance Locks only",    "updateInstanceLocks")
-    .addSeparator()
     .addItem("Undo Last Changes",             "undoLastChanges")
+    .addSeparator()
+    .addItem("Delete All Characters",         "deleteAllCharacters")
     .addToUi();
   ui.createMenu("Get The Addon").addItem("Open download page", "getTheAddon").addToUi();
 
@@ -1037,7 +1035,7 @@ function runUpdate_(opts) {
   });
 }
 
-// Button entry points (assigned to drawings / menu items — keep these names).
+// Button entry points (assigned to the Addon-tab drawings — keep these names).
 function updateAll()           { runUpdate_({ label: "Update All",            logType: "Everything",     gear: true,  locks: true,  reorder: true  }); }
 function updateEquipment()     { runUpdate_({ label: "Update Equipment",      logType: "Characters",     gear: true,  locks: false, reorder: false }); }
 function updateInstanceLocks() { runUpdate_({ label: "Update Instance Locks", logType: "Instance Locks", gear: false, locks: true,  reorder: false }); }
@@ -1112,5 +1110,30 @@ function undoLastChanges() {
       showUndoPlaceholder_(addon);
     }
     ss.toast("Reverted the last update.", "Undo Last Changes", 5);
+  });
+}
+
+// Clear "My Characters": delete every row except the protected title (row 1). Undoable.
+function deleteAllCharacters() {
+  withScriptLock_("Delete All Characters", ui => {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const charsSheet = ss.getSheetByName(SHEET_CHARS);
+    if (!charsSheet) {
+      ui.alert("Delete All Characters", `Missing the "${SHEET_CHARS}" sheet.`, ui.ButtonSet.OK);
+      return;
+    }
+    const resp = ui.alert("Delete All Characters",
+      'Do you really want to clear "My Characters"? It will delete all accounts and characters.', ui.ButtonSet.YES_NO);
+    if (resp !== ui.Button.YES) return;
+
+    let endRow = charsSheet.getLastRow();
+    if (endRow < 2) { ss.toast("Already empty.", "Delete All Characters", 5); return; }
+    // Include the value-less black trailing spacer getLastRow() ignores (else it lingers).
+    if (endRow < charsSheet.getMaxRows()) endRow++;
+
+    snapshotForUndo_(ss);
+    charsSheet.deleteRows(2, endRow - 1);
+    recordUpdate_(ss, "Deleted All Chars", "You deleted all characters .. you can still undo it!");
+    ss.toast("Cleared all characters.", "Delete All Characters", 5);
   });
 }
