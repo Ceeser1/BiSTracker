@@ -204,7 +204,7 @@ function GetBiSStatusForChar(charKey, specOverride)
     if not specName then return nil end
     local specEntry = char.specs and char.specs[specName]
     if not specEntry then return nil end
-    local specData  = BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[specName]
+    local specData  = ClassesBiS and ClassesBiS[specName]
     if not specData then return nil end
     local gear = specEntry.gear or {}
     local total, hasBiS = 0, 0

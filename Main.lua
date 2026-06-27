@@ -52,7 +52,7 @@ local function UpdateDetailPanel(panel, charData)
     end
 
     local specName = charData.activeSpec
-    local specData = specName and BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[specName]
+    local specData = specName and ClassesBiS and ClassesBiS[specName]
     local gear     = GetActiveGear(charData)
 
     if not specData then panel:SetHeight(20); return end
@@ -580,7 +580,7 @@ local function UpdateAllBisDetailPanel(panel, specName)
     for c = 1, 2 do
         for r = 1, DETAIL_MAX_LINES[c] do panel.lines[c][r]:Hide() end
     end
-    local specData = BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[specName]
+    local specData = ClassesBiS and ClassesBiS[specName]
     if not specData then panel:SetHeight(20); return end
 
     local COL_W = { DETAIL_COL_X[2] - DETAIL_COL_X[1] - 8, 632 - DETAIL_COL_X[2] - 8 }
@@ -676,7 +676,7 @@ function BiSTracker_RefreshAllClassesBis()
         if trees then
             local classSpecs = {}
             for _, specName in ipairs(trees) do
-                if BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[specName] then
+                if ClassesBiS and ClassesBiS[specName] then
                     table.insert(classSpecs, specName)
                 end
             end
@@ -694,7 +694,7 @@ function BiSTracker_RefreshAllClassesBis()
                 y = y - 22
 
                 for sIdx, specName in ipairs(classSpecs) do
-                    local specData   = BiSTrackerData.BiS[specName]
+                    local specData   = ClassesBiS[specName]
                     local isExpanded = expandedSpecs[specName]
 
                     local specRow = GetRow()

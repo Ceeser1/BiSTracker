@@ -132,8 +132,7 @@ COLOR = {
 -- BiS ITEM DATA
 -- ============================================================
 
-BiSTrackerData = BiSTrackerData or {}
-BiSTrackerData.BiS = {
+ClassesBiS = {
     ["Blood DK Tank"] = {
         {slot="Head", bis={name="Broken Ram Skull Helm",ilvl=277}},
         {slot="Neck", bis={name="Bile-Encrusted Medallion",ilvl=277}, alt={name="Noose of Malachite",ilvl=277}},

@@ -291,9 +291,9 @@ end
 local function LookupItemInBiS(itemName)
     -- Returns { [specName] = { {slotName, alt, bisName, bisIlvl, altName, altIlvl}, ... } }
     local results = {}
-    if not BiSTrackerData or not BiSTrackerData.BiS then return results end
+    if not ClassesBiS then return results end
     local needle = Trim(itemName)
-    for specName, specData in pairs(BiSTrackerData.BiS) do
+    for specName, specData in pairs(ClassesBiS) do
         for _, entry in ipairs(specData) do
             local isBiS = entry.bis and Trim(entry.bis.name) == needle
             local isAlt = entry.alt and Trim(entry.alt.name) == needle
@@ -580,7 +580,7 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
     end
 
     local specName = scanEntry.spec
-    local specData = specName and BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[specName]
+    local specData = specName and ClassesBiS and ClassesBiS[specName]
     local gear     = scanEntry.gear or {}
 
     -- Find the BiS entry for a given gear slot name
@@ -757,7 +757,7 @@ function BiSTracker_RefreshRaidList()
         if scanEntry then
             row.specLbl:SetText("|cffaaaaaa" .. (scanEntry.spec or scanEntry.class or "?") .. "|r")
             local spec     = scanEntry.spec
-            local specData = spec and BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[spec]
+            local specData = spec and ClassesBiS and ClassesBiS[spec]
             if specData then
                 local total, has = 0, 0
                 for _, entry in ipairs(specData) do
@@ -1512,7 +1512,7 @@ do
                     end
                 else
                     -- Annotate each gear item with bis/alt flags for this player's spec
-                    local specBiS = spec and BiSTrackerData and BiSTrackerData.BiS and BiSTrackerData.BiS[spec]
+                    local specBiS = spec and ClassesBiS and ClassesBiS[spec]
                     if specBiS then
                         for _, entry in ipairs(specBiS) do
                             local slotKey = Trim(entry.slot)
