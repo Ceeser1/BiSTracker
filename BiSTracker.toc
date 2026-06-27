@@ -6,6 +6,7 @@
 ## SavedVariables: BiSTrackerDB
 
 Constants.lua
+ClassesBiS.lua
 Utils.lua
 BiSTracker.lua
 Minimap.lua
