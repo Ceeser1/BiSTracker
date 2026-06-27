@@ -1,6 +1,6 @@
 # BiS Tracker
 
-A World of Warcraft **Wrath of the Lich King (3.3.5a)** addon for the **Warmane** private server that tracks every character and spec on your account — their **Best-in-Slot gear progress**, **raid lockouts**, and **GearScore** — and exports it all into a companion **Google Sheet** for a clean, account-wide overview.
+A World of Warcraft **Wrath of the Lich King (3.3.5a)** addon that tracks every character and spec on your account(s) — their **Best-in-Slot gear progress**, **raid lockouts / IDs**, and **GearScore** — and exports it all into a companion **Google Sheet** for a clean, account-wide overview.
 
 > **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.5 · **Author:** Ceeser · Pure Lua 5.1, no external libraries.
 
