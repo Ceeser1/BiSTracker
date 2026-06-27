@@ -1016,7 +1016,7 @@ function runUpdate_(opts) {
       parsed.entries.forEach(entry => {
         const spec  = normalizeSpec_(entry.spec);
         const block = findCharBlock_(charsSheet, entry.name, spec, account);
-        if (!block) { problems.push(`${entry.name} (${spec}): no block yet — run "Update All" first`); skipped++; return; }
+        if (!block) { problems.push(`${entry.name} (${spec}): no block yet — run "Update Everything" first`); skipped++; return; }
         if (opts.gear)  applyGear_(charsSheet, block.header, entry.gear, nameMap, entry.gs);
         if (opts.locks) applyLocks_(charsSheet, block.header, entry.locks);
         applyUwuLink_(charsSheet, block.header, entry.name, spec, entry.realm);
