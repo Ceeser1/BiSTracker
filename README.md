@@ -1,13 +1,12 @@
 # BiS Tracker
 
-A World of Warcraft **Wrath of the Lich King (3.3.5a)** addon that tracks every character and spec on your account(s): their **Best-in-Slot gear progress**, **raid lockouts / IDs**, and **GearScore**: and exports it all into a companion **Google Sheet** for a clean, account-wide overview.
-
 > **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.5 · **Author:** Ceeser · Pure Lua 5.1, no external libraries.
 
 ---
 
 ## Table of Contents
 
+- [Summary](#summary)
 - [A. The Addon](#a-the-addon)
   - [At a glance](#at-a-glance)
   - [Character & spec tracking](#character--spec-tracking)
@@ -34,6 +33,12 @@ A World of Warcraft **Wrath of the Lich King (3.3.5a)** addon that tracks every 
   - [Multi-account & multi-realm](#multi-account--multi-realm)
 - [Installation](#installation)
 - [FAQ](#faq)
+
+---
+
+## Summary
+
+A World of Warcraft **Wrath of the Lich King (3.3.5a)** addon that tracks every character and spec on your account(s): their **Best-in-Slot gear progress**, **raid lockouts / IDs**, and **GearScore**: and exports it all into a companion **Google Sheet** for a clean, account-wide overview.
 
 ---
 
