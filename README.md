@@ -1,6 +1,6 @@
 # BiS Tracker
 
-> **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.5 · **Author:** Ceeser · Pure Lua 5.1, no external libraries.
+> **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.6 · **Author:** Ceeser · Pure Lua 5.1, no external libraries.
 
 ---
 
