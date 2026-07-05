@@ -6,6 +6,7 @@ local lsWidgets          = {}
 local lsRaidRowPool      = {}
 local lsRaidDetailPanels = {}
 local expandedRaidMembers = {}
+local raidMSChanged      = {}   -- [playerName]=true: user flagged them as having changed Main Spec
 local lsGeneralCollapsed  = false  -- General Settings section collapse state
 local lsExportCollapsed   = false  -- Export Settings section collapse state
 local lsAnnounceCollapsed = false  -- Announce Settings section collapse state
@@ -462,7 +463,8 @@ function HandlePostedItem(sender, message)
     if not ls.informPlayers then return end
     for playerName, scanEntry in pairs(raidScanData) do
         local spec = scanEntry.spec
-        if spec and bisResults[spec] then
+        -- Skip players flagged "MS Changed": their scanned gear no longer matches their spec's BiS.
+        if spec and bisResults[spec] and not raidMSChanged[playerName] then
             local label = GetNotifyUpgradeType(bisResults[spec], scanEntry.gear, itemName, postedIlvl)
             if label then
                 local msg = itemLink .. " is " .. UpgradePhrase(label) .. " for you."
@@ -510,10 +512,12 @@ local function GetOrCreateRaidDetailPanel(playerName)
     local panel = CreateFrame("Frame", nil, mlContent)
     panel:SetWidth(626); panel:SetHeight(1)
     local bg = panel:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints(); bg:SetTexture(0.05, 0.05, 0.05, 0.72)
+    bg:SetPoint("TOPLEFT",     panel, "TOPLEFT",     0, 0)
+    bg:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 2, 0)   -- extend 2px past the right edge
+    bg:SetTexture(0.05, 0.05, 0.05, 0.72)
     local sep = panel:CreateTexture(nil, "ARTWORK")
     sep:SetWidth(1)
-    sep:SetPoint("TOPLEFT", panel, "TOPLEFT", DETAIL_COL_X[2] - 5, -3)
+    sep:SetPoint("TOPLEFT", panel, "TOPLEFT", DETAIL_COL_X[2] - 6, -3)
     sep:SetTexture(0.35, 0.35, 0.35, 1)
     panel.sep = sep
     panel.lines = {}
@@ -596,11 +600,24 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
         return ItemColor(gear[gearSlot], FindBisEntry(gearSlot))
     end
 
+    -- Ranged/relic slot: show the specific type (Sigil, Wand, Bow, ...) from the item subclass.
+    local RANGED_LABEL = {
+        sigil="Sigil", sigils="Sigil", libram="Libram", librams="Libram",
+        idol="Idol", idols="Idol", totem="Totem", totems="Totem",
+        wand="Wand", wands="Wand", bow="Bow", bows="Bow", gun="Gun", guns="Gun",
+        crossbow="Crossbow", crossbows="Crossbow", thrown="Thrown",
+    }
+    local function RangedLabel(item)
+        local st = item and item.subType
+        return (st and RANGED_LABEL[st:lower()]) or "Ranged"
+    end
+
     -- Write one equipped item line; skips if slot is empty
     local COL_W = { DETAIL_COL_X[2] - DETAIL_COL_X[1] - 8, 626 - DETAIL_COL_X[2] - 8 }
     local function WriteItem(c, lineIdx, yOff, gearSlot, label)
         local item = gear[gearSlot]
         if not item or not item.name then return lineIdx, yOff end
+        if gearSlot == "Ranged" then label = RangedLabel(item) end
         lineIdx = lineIdx + 1
         if lineIdx > DETAIL_MAX_LINES[c] then return lineIdx, yOff end
         local row = panel.lines[c][lineIdx]
@@ -621,6 +638,8 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
     local COL1_GEAR = {
         { "Main Hand",  "Main Hand"  },
         { "Off Hand",   "Off Hand"   },
+        { "Ranged",     "Ranged"     },
+        { false,        false        },   -- blank spacer between weapons and armor
         { "Head",       "Head"       },
         { "Neck",       "Neck"       },
         { "Shoulders",  "Shoulders"  },
@@ -637,13 +656,18 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
         { "Ring 2",     "Ring 2"     },
         { "Trinket 1",  "Trinket 1"  },
         { "Trinket 2",  "Trinket 2"  },
-        { "Ranged",     "Ranged"     },
     }
 
     local colHeights = { 0, 0 }
     do
         local lineIdx, yOff = 0, -4
-        for _, s in ipairs(COL1_GEAR) do lineIdx, yOff = WriteItem(1, lineIdx, yOff, s[1], s[2]) end
+        for _, s in ipairs(COL1_GEAR) do
+            if not s[1] then
+                if lineIdx > 0 then yOff = yOff - DETAIL_LINE_H end   -- blank spacer row (only after real rows)
+            else
+                lineIdx, yOff = WriteItem(1, lineIdx, yOff, s[1], s[2])
+            end
+        end
         colHeights[1] = math.abs(yOff) + 6
     end
     do
@@ -682,23 +706,28 @@ function BiSTracker_RefreshRaidList()
             row = CreateFrame("Frame", nil, mlContent)
             row:SetHeight(ROW_H); row:SetWidth(626)
             local bg = row:CreateTexture(nil, "BACKGROUND")
-            bg:SetAllPoints()
+            bg:SetPoint("TOPLEFT",     row, "TOPLEFT",     0, 0)
+            bg:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 2, 0)   -- extend 2px past the right edge
             bg:SetTexture(0, 0, 0, (rowIdx % 2 == 0) and 0.2 or 0.08)
             row.nameLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             row.nameLbl:SetPoint("LEFT", row, "LEFT", 8, 0)
             row.nameLbl:SetWidth(150); row.nameLbl:SetJustifyH("LEFT")
             row.specLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            row.specLbl:SetPoint("LEFT", row, "LEFT", 160, 0)
+            row.specLbl:SetPoint("LEFT", row, "LEFT", 150, 0)
             row.specLbl:SetWidth(150); row.specLbl:SetJustifyH("LEFT")
+            row.msCheck = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+            row.msCheck:SetWidth(18); row.msCheck:SetHeight(18)
+            row.msCheck:ClearAllPoints()
+            row.msCheck:SetPoint("CENTER", row, "LEFT", 320, 0)   -- centered under "MS Changed*" header
             row.bisLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            row.bisLbl:SetPoint("LEFT", row, "LEFT", 315, 0)
-            row.bisLbl:SetWidth(115); row.bisLbl:SetJustifyH("CENTER")
+            row.bisLbl:SetPoint("LEFT", row, "LEFT", 390, 0)
+            row.bisLbl:SetWidth(90); row.bisLbl:SetJustifyH("CENTER")
             row.gsLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            row.gsLbl:SetPoint("LEFT", row, "LEFT", 440, 0)
-            row.gsLbl:SetWidth(115); row.gsLbl:SetJustifyH("CENTER")
+            row.gsLbl:SetPoint("LEFT", row, "LEFT", 493, 0)
+            row.gsLbl:SetWidth(90); row.gsLbl:SetJustifyH("CENTER")
             row.toggleBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
             row.toggleBtn:SetWidth(26); row.toggleBtn:SetHeight(18)
-            row.toggleBtn:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+            row.toggleBtn:SetPoint("RIGHT", row, "RIGHT", 0, 0)
             lsRaidRowPool[rowIdx] = row
         end
         row:ClearAllPoints()
@@ -712,6 +741,14 @@ function BiSTracker_RefreshRaidList()
         else
             row.nameLbl:SetText("|cff666666" .. (m.name or "?") .. "|r")
         end
+
+        -- MS Changed checkbox: one per player, state kept for the session (unchecked by default).
+        local msName = m.name
+        row.msCheck:SetChecked(raidMSChanged[msName] and true or false)
+        row.msCheck:SetScript("OnClick", function(self)
+            raidMSChanged[msName] = self:GetChecked() and true or false
+        end)
+        row.msCheck:Show()
 
         local scanEntry = raidScanData[m.name]
         if scanEntry then
@@ -785,6 +822,21 @@ function BiSTracker_RefreshRaidList()
         row.nameLbl:SetText("|cffaaaaaa Not in a raid.|r")
         cumY = ROW_H
     end
+
+    -- Grey note under the list explaining the MS Changed* column.
+    local note = mlContent.raidNote
+    if not note then
+        note = mlContent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        note:SetWidth(600); note:SetJustifyH("LEFT")
+        note:SetText(COLOR.grey .. "* If players changed MS the Addon will not compare posted items to their gear and not inform them for possible upgrades since their spec doesn't match desired items.|r")
+        local nf, _, nfl = note:GetFont()
+        if nf then note:SetFont(nf, 9, nfl) end   -- smaller than GameFontNormalSmall
+        mlContent.raidNote = note
+    end
+    note:ClearAllPoints()
+    note:SetPoint("TOPLEFT", mlContent, "TOPLEFT", 8, startY - cumY - 8)
+    note:Show()
+    cumY = cumY + math.max(note:GetStringHeight(), 48) + 14
 
     mlContent:SetHeight(math.abs(startY) + cumY + 20)
 end
@@ -996,15 +1048,19 @@ function BuildLootSettingsUI(c)
     raidCharHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 8, -26)
     raidCharHdr:SetText(COLOR.legendary .. "Character|r")
     local raidSpecHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidSpecHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 160, -26)
+    raidSpecHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 150, -26)
     raidSpecHdr:SetText(COLOR.legendary .. "Spec|r")
+    local raidMsHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    raidMsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 280, -26)
+    raidMsHdr:SetWidth(80); raidMsHdr:SetJustifyH("CENTER")
+    raidMsHdr:SetText(COLOR.legendary .. "MS Changed*|r")
     local raidBisHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidBisHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 315, -26)
-    raidBisHdr:SetWidth(115); raidBisHdr:SetJustifyH("CENTER")
+    raidBisHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 390, -26)
+    raidBisHdr:SetWidth(90); raidBisHdr:SetJustifyH("CENTER")
     raidBisHdr:SetText(COLOR.legendary .. "BiS Items|r")
     local raidGsHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidGsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 440, -26)
-    raidGsHdr:SetWidth(115); raidGsHdr:SetJustifyH("CENTER")
+    raidGsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 493, -26)
+    raidGsHdr:SetWidth(90); raidGsHdr:SetJustifyH("CENTER")
     raidGsHdr:SetText(COLOR.legendary .. "GearScore|r")
     local raidSep = raidHdrFrame:CreateTexture(nil, "ARTWORK")
     raidSep:SetHeight(1)
@@ -1441,9 +1497,9 @@ do
                     local link = GetInventoryItemLink(currentUnit, slot.id)
                     if link then
                         local iName = link:match("%[(.-)%]")
-                        local _, _, quality, ilvl, _, _, _, _, equipLoc = GetItemInfo(link)
+                        local _, _, quality, ilvl, _, _, subType, _, equipLoc = GetItemInfo(link)
                         if iName then
-                            gear[slot.name] = { name=iName, ilvl=ilvl or 0, quality=quality, equipLoc=equipLoc }
+                            gear[slot.name] = { name=iName, ilvl=ilvl or 0, quality=quality, equipLoc=equipLoc, subType=subType }
                             slotCount = slotCount + 1
                         end
                     end
