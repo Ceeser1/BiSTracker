@@ -210,6 +210,20 @@ SlashCmdList["BISTRACKER"] = function(msg)
         if mainFrame and mainFrame:IsShown() then BiSTracker_RefreshList() end
     elseif cmd == "locks" then
         ScanInstanceLocks(); Print("Instance lockouts refreshed.")
+    elseif cmd == "raidscan" then
+        if GetNumRaidMembers() == 0 then
+            Print("Raid scan: you're not in a raid.")
+        elseif not LS().scanRaid then
+            Print("Raid scanning is off — enable |cffaaaaaa'Scan raid members'|r in the settings first.")
+        else
+            if not raidScanFrame then          -- window not opened yet this session: build UI silently
+                BiSTracker_ShowMainFrame()
+                if mainFrame then mainFrame:Hide() end
+            end
+            raidScanFrame:Show()
+            raidScanFrame:TriggerRebuild()
+            Print("Raid scan forced — full rescan started, 5-minute timer reset.")
+        end
     elseif cmd == "export" then
         BiSTracker_ShowExportFrame()
     elseif cmd == "spec" then
@@ -271,6 +285,7 @@ SlashCmdList["BISTRACKER"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis|r - Toggle main window")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis scan|r - Rescan equipped gear")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis locks|r - Refresh instance lockouts")
+        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis raidscan|r - Force a full raid rescan (resets the 5-min timer)")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis export|r - Show export string")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis spec|r - Print currently detected spec")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis gs|r - [Debug] Print GearScore breakdown")

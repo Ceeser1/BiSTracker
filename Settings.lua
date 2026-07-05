@@ -384,6 +384,11 @@ local function GetNotifyUpgradeType(bisEntries, myGear, itemName, postedIlvl)
     return best
 end
 
+-- "a BiS upgrade" / "an Alt BiS upgrade" / "a pre-BiS upgrade" / "an Alt pre-BiS upgrade"
+local function UpgradePhrase(label)
+    return ((label:sub(1, 3) == "Alt") and "an " or "a ") .. label .. " upgrade"
+end
+
 function HandlePostedItem(sender, message)
     local ls = LS()
 
@@ -392,6 +397,7 @@ function HandlePostedItem(sender, message)
     if not itemLink then return end
     local itemName = itemLink:match("%[(.-)%]")
     if not itemName then return end
+    local postedIlvl = select(4, GetItemInfo(itemLink)) or 0
 
     local bisResults = LookupItemInBiS(itemName)
     if not next(bisResults) then return end
@@ -413,7 +419,6 @@ function HandlePostedItem(sender, message)
             local mySpec = myChar and myChar.activeSpec
             if mySpec and bisResults[mySpec] then
                 local myGear      = GetActiveGear(myChar)
-                local postedIlvl  = select(4, GetItemInfo(itemLink)) or 0
                 local upgradeType = GetNotifyUpgradeType(bisResults[mySpec], myGear, itemName, postedIlvl)
                 if upgradeType then
                     Print(itemLink .. " is a " .. upgradeType .. " upgrade for you!")
@@ -453,46 +458,18 @@ function HandlePostedItem(sender, message)
         end
     end
 
-    -- Inform players
+    -- Inform players: same BiS/Alt/pre-BiS/Alt pre-BiS logic as "always notify me".
     if not ls.informPlayers then return end
     for playerName, scanEntry in pairs(raidScanData) do
         local spec = scanEntry.spec
         if spec and bisResults[spec] then
-            for _, bisEntry in ipairs(bisResults[spec]) do
-                local slotName = bisEntry.slotName
-                local equipped
-                if slotName == "Ring" then
-                    equipped = scanEntry.gear["Ring 1"] or scanEntry.gear["Ring 2"]
-                elseif slotName == "Trinket" then
-                    equipped = scanEntry.gear["Trinket 1"] or scanEntry.gear["Trinket 2"]
+            local label = GetNotifyUpgradeType(bisResults[spec], scanEntry.gear, itemName, postedIlvl)
+            if label then
+                local msg = itemLink .. " is " .. UpgradePhrase(label) .. " for you."
+                if ls.informChannel == "whisper" then
+                    SendChatMessage(msg, "WHISPER", nil, playerName)
                 else
-                    equipped = scanEntry.gear[slotName]
-                end
-                local upgrade = nil
-                if not bisEntry.alt then
-                    if not equipped then
-                        upgrade = "a BiS upgrade"
-                    elseif bisEntry.altName and Trim(equipped.name) == Trim(bisEntry.altName) then
-                        upgrade = "a BiS upgrade"
-                    elseif equipped.ilvl and bisEntry.bisIlvl and bisEntry.bisIlvl > 0
-                       and equipped.ilvl < bisEntry.bisIlvl then
-                        upgrade = "a BiS upgrade"
-                    end
-                else
-                    if not equipped then
-                        upgrade = "an Alt BiS upgrade"
-                    elseif equipped.ilvl and bisEntry.altIlvl and bisEntry.altIlvl > 0
-                       and equipped.ilvl < bisEntry.altIlvl then
-                        upgrade = "an Alt BiS upgrade"
-                    end
-                end
-                if upgrade then
-                    local ch = ls.informChannel
-                    if ch == "whisper" then
-                        SendChatMessage(itemLink .. " is " .. upgrade .. " for you.", "WHISPER", nil, playerName)
-                    else
-                        SendInChannel(playerName .. " " .. itemLink .. " is " .. upgrade .. " for you.", ch)
-                    end
+                    SendInChannel(playerName .. " " .. msg, ls.informChannel)
                 end
             end
         end
@@ -1183,9 +1160,11 @@ function BuildLootSettingsUI(c)
     cbScan:SetScript("OnClick", function()
         local on = cbScan:GetChecked() and true or false
         LS().scanRaid = on
-        if on then raidScanFrame:Show()
+        if on then
+            raidScanFrame:Show()
+            raidScanFrame:TriggerRebuild()   -- start (or restart) the full scan immediately
         else
-            raidScanFrame:Hide()
+            raidScanFrame:Stop()             -- end the queue and stop updating
             if LS().informPlayers then cbInform:SetChecked(false); LS().informPlayers = false end
         end
     end)
@@ -1193,7 +1172,8 @@ function BuildLootSettingsUI(c)
         local on = cbInform:GetChecked() and true or false
         LS().informPlayers = on
         if on and not LS().scanRaid then
-            cbScan:SetChecked(true); LS().scanRaid = true; raidScanFrame:Show()
+            cbScan:SetChecked(true); LS().scanRaid = true
+            raidScanFrame:Show(); raidScanFrame:TriggerRebuild()
         end
     end)
 
@@ -1376,6 +1356,19 @@ do
         local total = BuildFullQueue()
         mainTimer = INTERVAL
         if debugMode then Print("[RaidScan] Queue rebuilt: |cffffff00" .. total .. "|r member(s).") end
+    end
+
+    -- Stop scanning entirely: clear the queue + any in-progress inspection, drop results, hide.
+    function raidScanFrame:Stop()
+        raidScanData = {}; raidScanQueue = {}
+        currentUnit = nil; currentName = nil; currentEntry = nil
+        rebuildActive = false; rebuildTimer = 0
+        fullScanInProgress = false; onlineStatus = {}
+        mainTimer = 0; inspectTimer = 0; connTimer = 0
+        self:Hide()
+        if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+            BiSTracker_RefreshRaidList()
+        end
     end
 
     -- Called on RAID_ROSTER_UPDATE: detects joins and leaves incrementally.
