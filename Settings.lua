@@ -23,6 +23,11 @@ local addonUsers       = {}    -- [playerName] = true: raid members confirmed ru
 local skipUsers        = {}    -- [playerName] = true: addon users who opted out of being announcer
 local currentAnnouncer = nil   -- elected announcer name; only this player runs announce/inform
 
+-- MS-Changed sync: only the announcer broadcasts; listeners reassemble all chunks of one
+-- transmission before applying, so a name split into a later chunk is never wrongly unchecked.
+local mscBuf = { from = nil, total = 0, seen = 0, parts = {} }  -- listener reassembly buffer
+local mscLocked = false  -- true once a listener applies an announcer broadcast: MS-Changed checkboxes disabled
+
 function LS()
     BiSTrackerDB.lootSettings = BiSTrackerDB.lootSettings or {}
     local ls = BiSTrackerDB.lootSettings
@@ -183,6 +188,14 @@ local function SetAnnouncer(name)
         if debugMode then
             Print("[Announcer] A new announcer for this Raid got selected: |cffffffff" .. (name or "None") .. "|r")
         end
+        -- Announcer changed (None, us, or a different player): re-enable the MS-Changed checkboxes
+        -- until this announcer sends its first broadcast, which re-locks listeners (ApplyMSChangedSet).
+        if mscLocked then
+            mscLocked = false
+            if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+                BiSTracker_RefreshRaidList()
+            end
+        end
     end
     UpdateAnnouncerUI()
 end
@@ -203,6 +216,114 @@ function BiSTracker_AnnouncerInit()
         SendAddon(LS().skipAnnouncer and "SKIP" or "HELLO")
     end
     BiSTracker_RefreshAnnouncer()
+end
+
+-- ============================================================
+-- MS-CHANGED SYNC  (announcer broadcasts, listeners apply)
+-- ============================================================
+-- After each raid-scan queue finishes, the elected announcer broadcasts the set of players
+-- it has flagged as "MS Changed". Listeners collect every chunk of one transmission, then set
+-- their checkboxes to exactly that set (check listed names, uncheck the rest).
+
+local MSC_MSG_LIMIT   = 240   -- conservative cap (bytes) on an addon-message body (255 minus prefix/tab margin)
+local MSC_MARKER_ROOM = 8     -- bytes reserved for the trailing ";i/n" chunk marker
+
+-- Announcer: pack the flagged raid members into <=limit chunks and broadcast them.
+local function BroadcastMSChanges()
+    if currentAnnouncer ~= UnitName("player") then return end   -- only the announcer sends
+    if GetNumRaidMembers() == 0 then return end
+
+    -- Only broadcast members still in the raid (skip stale flags for players who left).
+    local inRaid = {}
+    for i = 1, GetNumRaidMembers() do
+        local n = GetRaidRosterInfo(i)
+        if n then inRaid[n] = true end
+    end
+    local names = {}
+    for name, flagged in pairs(raidMSChanged) do
+        if flagged and inRaid[name] then names[#names + 1] = name end
+    end
+
+    -- Greedily pack names (';'-joined) into chunk payloads within the byte budget.
+    local budget = MSC_MSG_LIMIT - 4 - MSC_MARKER_ROOM   -- 4 = "MSC:"
+    local chunks, cur = {}, ""
+    for _, name in ipairs(names) do
+        local piece = (cur == "") and name or (";" .. name)
+        if cur ~= "" and #cur + #piece > budget then
+            chunks[#chunks + 1] = cur
+            cur = name
+        else
+            cur = cur .. piece
+        end
+    end
+    chunks[#chunks + 1] = cur   -- always at least one chunk ("" = empty set -> listeners uncheck all)
+
+    local total = #chunks
+    for i = 1, total do
+        local marker  = i .. "/" .. total
+        local payload = chunks[i]
+        local body = (payload == "") and ("MSC:" .. marker) or ("MSC:" .. payload .. ";" .. marker)
+        SendAddon(body)
+    end
+    if debugMode then
+        Print("[MSChanged] Broadcast |cffffff00" .. #names .. "|r flagged member(s) in " .. total .. " message(s).")
+    end
+end
+
+-- Listener: apply an authoritative flagged-set — check listed names, uncheck every other
+-- current raid member. Only touches players currently in the raid.
+local function ApplyMSChangedSet(full)
+    local changed = false
+    for i = 1, GetNumRaidMembers() do
+        local n = GetRaidRosterInfo(i)
+        if n then
+            local want = full[n] and true or nil
+            if (raidMSChanged[n] and true or nil) ~= want then
+                raidMSChanged[n] = want
+                changed = true
+            end
+        end
+    end
+    if not mscLocked then mscLocked = true; changed = true end   -- bound to the announcer: disable checkboxes
+    if changed and mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+        BiSTracker_RefreshRaidList()
+    end
+end
+
+-- Listener: parse one "MSC:" chunk, buffer it, and apply once the whole transmission arrives.
+local function HandleMSChanged(sender, body)
+    if sender == UnitName("player") then return end   -- never our own (RAID msgs don't echo anyway)
+    if sender ~= currentAnnouncer then return end      -- only the elected announcer is authoritative
+
+    local tokens = {}
+    for tok in body:gmatch("[^;]+") do tokens[#tokens + 1] = tok end
+    if #tokens == 0 then return end
+    local idx, tot = tokens[#tokens]:match("^(%d+)/(%d+)$")   -- last token is the "i/n" marker
+    idx, tot = tonumber(idx), tonumber(tot)
+    if not idx or not tot or tot < 1 or idx < 1 or idx > tot then return end   -- malformed: drop
+
+    local chunkNames = {}
+    for k = 1, #tokens - 1 do chunkNames[#chunkNames + 1] = tokens[k] end
+
+    -- Chunk 1 (or a sender/size change) starts a fresh assembly. A single sender's messages are
+    -- delivered in order, so chunk 1 always leads; the parts[idx] guard drops any duplicate.
+    if idx == 1 or mscBuf.from ~= sender or mscBuf.total ~= tot then
+        mscBuf.from = sender; mscBuf.total = tot; mscBuf.seen = 0; mscBuf.parts = {}
+    end
+    if not mscBuf.parts[idx] then
+        mscBuf.parts[idx] = chunkNames
+        mscBuf.seen = mscBuf.seen + 1
+    end
+
+    if mscBuf.seen >= mscBuf.total then
+        local full = {}
+        for ci = 1, mscBuf.total do
+            local part = mscBuf.parts[ci]
+            if part then for _, nm in ipairs(part) do full[nm] = true end end
+        end
+        ApplyMSChangedSet(full)
+        mscBuf.from = nil; mscBuf.total = 0; mscBuf.seen = 0; mscBuf.parts = {}
+    end
 end
 
 -- Incoming addon traffic (prefix-filtered in the event handler caller).
@@ -239,6 +360,8 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
         if currentAnnouncer == UnitName("player") then
             SendAddon("ANN:" .. currentAnnouncer)
         end
+    elseif msg:sub(1, 4) == "MSC:" then
+        HandleMSChanged(sender, msg:sub(5))
     end
 end
 
@@ -748,6 +871,8 @@ function BiSTracker_RefreshRaidList()
         row.msCheck:SetScript("OnClick", function(self)
             raidMSChanged[msName] = self:GetChecked() and true or false
         end)
+        -- Listeners bound to an announcer's broadcast can't edit; enabled when no announcer / we're it.
+        if mscLocked then row.msCheck:Disable() else row.msCheck:Enable() end
         row.msCheck:Show()
 
         local scanEntry = raidScanData[m.name]
@@ -1390,7 +1515,8 @@ do
                 Print("[RaidScan] Individual Scan complete. Next full Scan scheduled in |cffffff00" .. remaining .. "|r seconds.")
             end
         end
-        SaveRaidSnapshot()   -- persist the freshest full picture of the raid
+        SaveRaidSnapshot()      -- persist the freshest full picture of the raid
+        BroadcastMSChanges()    -- announcer pushes the MS-Changed set to listeners
     end
 
     -- Reacts to a single member's online/offline transition (driven by polling).
