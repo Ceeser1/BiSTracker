@@ -1257,6 +1257,7 @@ do
     local rebuildTimer       = 0
     local rebuildActive      = false
     local fullScanInProgress = false  -- true while draining a full-roster queue (vs individual joins)
+    local snapshotLoadAttempted = false  -- seed panel from the saved snapshot once per raid (first roster update)
     local onlineStatus       = {}     -- onlineStatus[name] = bool; last-known connection state
     local connTimer          = 0
     local CONN_POLL          = 2.0    -- seconds between connection-status polls
@@ -1293,6 +1294,50 @@ do
             end
         end
         return #raidScanQueue
+    end
+
+    -- Persist the current scan results as a per-realm snapshot so a relog, crash, or
+    -- character switch can show the full raid instantly instead of rescanning everyone
+    -- from scratch. Called whenever a scan queue drains (see OnQueueDrained).
+    local function SaveRaidSnapshot()
+        if not next(raidScanData) then return end   -- nothing scanned yet: keep any existing snapshot
+        local members = {}
+        for name, data in pairs(raidScanData) do members[name] = data end  -- shallow copy of the map
+        local msChanged = {}
+        for name, flagged in pairs(raidMSChanged) do
+            if flagged then msChanged[name] = true end  -- persist the "MS Changed" checkboxes
+        end
+        BiSTrackerDB.raidSnapshot = { realm = GetRealmName(), time = time(), members = members, msChanged = msChanged }
+    end
+
+    -- Seed raidScanData from the saved snapshot, keeping only players currently in the raid
+    -- (and only if the snapshot was taken on this realm). Returns how many were restored.
+    local function LoadRaidSnapshot()
+        local snap = BiSTrackerDB.raidSnapshot
+        if not snap or not snap.members then return 0 end
+        if snap.realm and snap.realm ~= GetRealmName() then return 0 end
+        local roster = { [UnitName("player")] = true }
+        for i = 1, GetNumRaidMembers() do
+            local n = GetRaidRosterInfo(i)
+            if n then roster[n] = true end
+        end
+        local loaded = 0
+        for name, data in pairs(snap.members) do
+            if roster[name] and not raidScanData[name] then
+                raidScanData[name] = data
+                loaded = loaded + 1
+            end
+        end
+        if snap.msChanged then
+            for name, flagged in pairs(snap.msChanged) do
+                if flagged and roster[name] then raidMSChanged[name] = true end
+            end
+        end
+        if debugMode and loaded > 0 then
+            local age = snap.time and (time() - snap.time) or 0
+            Print("[RaidScan] Snapshot restored: |cffffff00" .. loaded .. "|r member(s) (" .. age .. "s old). Rescanning in background...")
+        end
+        return loaded
     end
 
     -- Returns true when a player is already being inspected or is in the queue.
@@ -1345,6 +1390,7 @@ do
                 Print("[RaidScan] Individual Scan complete. Next full Scan scheduled in |cffffff00" .. remaining .. "|r seconds.")
             end
         end
+        SaveRaidSnapshot()   -- persist the freshest full picture of the raid
     end
 
     -- Reacts to a single member's online/offline transition (driven by polling).
@@ -1420,6 +1466,7 @@ do
         currentUnit = nil; currentName = nil; currentEntry = nil
         rebuildActive = false; rebuildTimer = 0
         fullScanInProgress = false; onlineStatus = {}
+        snapshotLoadAttempted = false
         mainTimer = 0; inspectTimer = 0; connTimer = 0
         self:Hide()
         if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
@@ -1435,8 +1482,23 @@ do
             currentUnit = nil; currentName = nil; currentEntry = nil
             rebuildActive = false; rebuildTimer = 0
             fullScanInProgress = false; onlineStatus = {}
+            snapshotLoadAttempted = false   -- re-arm snapshot load for the next raid we join
             self:Hide()
             return
+        end
+
+        -- First roster update this session (or after leaving/rejoining) while in a raid:
+        -- restore the last snapshot so the panel shows the full raid instantly, then run a
+        -- normal full rescan in the background to refresh every member from scratch.
+        if not snapshotLoadAttempted then
+            snapshotLoadAttempted = true
+            if LoadRaidSnapshot() > 0 then
+                self:TriggerRebuild()
+                if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+                    BiSTracker_RefreshRaidList()
+                end
+                return
+            end
         end
 
         local playerName = UnitName("player")
