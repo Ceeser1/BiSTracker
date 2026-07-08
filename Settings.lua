@@ -28,6 +28,14 @@ local currentAnnouncer = nil   -- elected announcer name; only this player runs 
 local mscBuf = { from = nil, total = 0, seen = 0, parts = {} }  -- listener reassembly buffer
 local mscLocked = false  -- true once a listener applies an announcer broadcast: MS-Changed checkboxes disabled
 
+-- "Announcer don't whisper me": each player broadcasts its own opt-out; everyone notes it, and the
+-- announcer skips whispering opted-out players. On announcer handoff the outgoing announcer syncs
+-- its accumulated ruleset to the newcomer (who may have missed earlier broadcasts).
+local noWhisperUsers = {}   -- [name] = true: player opted out of upgrade whispers (session set, all clients)
+local nwsBuf = { from = nil, total = 0, seen = 0, parts = {} }  -- new-announcer handoff reassembly buffer
+local nwLastSent = false    -- last opt-out value we actually broadcast (idempotency guard; false = default)
+local wasInRaid = false     -- tracks the not-in-raid -> in-raid transition to broadcast on join
+
 function LS()
     BiSTrackerDB.lootSettings = BiSTrackerDB.lootSettings or {}
     local ls = BiSTrackerDB.lootSettings
@@ -45,6 +53,7 @@ function LS()
     if ls.autoScanLocks   == nil then ls.autoScanLocks   = true       end
     if ls.skipAnnouncer   == nil then ls.skipAnnouncer   = false      end
     if ls.minimapPopup    == nil then ls.minimapPopup    = true       end
+    if ls.noWhisper       == nil then ls.noWhisper       = false      end  -- opt out of announcer upgrade whispers
     -- Settings-window section collapse state (persist so it survives relog; default expanded)
     if ls.genCollapsed    == nil then ls.genCollapsed    = false      end
     if ls.expCollapsed    == nil then ls.expCollapsed    = false      end
@@ -96,6 +105,75 @@ end)
 local function SendAddon(msg, target)
     table.insert(outQueue, { msg = msg, chan = target and "WHISPER" or "RAID", target = target })
     outFrame:Show()
+end
+
+-- Split a name list into addon-message bodies of the form "<prefix>Name1;Name2;i/n", each within the
+-- 255-byte cap (240 with margin). Always returns >=1 body ("<prefix>1/1" for an empty list).
+local function ChunkNames(prefix, names)
+    local budget = 240 - #prefix - 8   -- 8 = room for the trailing ";i/n" marker
+    local chunks, cur = {}, ""
+    for _, name in ipairs(names) do
+        local piece = (cur == "") and name or (";" .. name)
+        if cur ~= "" and #cur + #piece > budget then
+            chunks[#chunks + 1] = cur
+            cur = name
+        else
+            cur = cur .. piece
+        end
+    end
+    chunks[#chunks + 1] = cur
+    local total, bodies = #chunks, {}
+    for i = 1, total do
+        local marker  = i .. "/" .. total
+        local payload = chunks[i]
+        bodies[i] = (payload == "") and (prefix .. marker) or (prefix .. payload .. ";" .. marker)
+    end
+    return bodies
+end
+
+-- Broadcast our own "don't whisper me" decision to the raid (NW:1 opted out, NW:0 opted in).
+local function NW_Send()
+    if GetNumRaidMembers() == 0 then return end
+    local v = LS().noWhisper and true or false
+    SendAddon("NW:" .. (v and "1" or "0"))
+    nwLastSent = v
+end
+
+-- 5s trailing throttle so spam-toggling the checkbox collapses into a single (settled) broadcast.
+local nwThrottleFrame = CreateFrame("Frame")
+local nwThrottleAccum = 0
+local nwThrottlePending = false
+nwThrottleFrame:Hide()
+nwThrottleFrame:SetScript("OnUpdate", function(self, elapsed)
+    nwThrottleAccum = nwThrottleAccum + elapsed
+    if nwThrottleAccum >= 5.0 then
+        nwThrottleAccum = 0; nwThrottlePending = false; self:Hide()
+        if (LS().noWhisper and true or false) ~= nwLastSent then NW_Send() end   -- only if it actually changed
+    end
+end)
+local function ScheduleNoWhisperBroadcast()
+    if not nwThrottlePending then
+        nwThrottlePending = true; nwThrottleAccum = 0; nwThrottleFrame:Show()
+    end
+    -- Already pending: the running timer will pick up the latest LS().noWhisper when it fires.
+end
+
+-- Announcer handoff: give the newly elected announcer our accumulated opt-out ruleset (directed
+-- whisper), since a just-joined announcer missed the earlier NW broadcasts. Chunked, current-raid only.
+local function SendNoWhisperHandoff(target)
+    if GetNumRaidMembers() == 0 then return end
+    local inRaid = {}
+    for i = 1, GetNumRaidMembers() do
+        local n = GetRaidRosterInfo(i)
+        if n then inRaid[n] = true end
+    end
+    local names = {}
+    for name, v in pairs(noWhisperUsers) do
+        if v and inRaid[name] then names[#names + 1] = name end
+    end
+    if #names == 0 then return end   -- nothing opted out: nothing to hand off (merge-only semantics)
+    for _, body in ipairs(ChunkNames("NWSYNC:", names)) do SendAddon(body, target) end
+    if debugMode then Print("[NoWhisper] Handoff to |cffffff00" .. target .. "|r: " .. #names .. " opted-out member(s).") end
 end
 
 -- Throttle for "who is the announcer?" requests (sent by newcomers on joining a raid).
@@ -188,9 +266,15 @@ end
 
 local function SetAnnouncer(name)
     if currentAnnouncer ~= name then
+        local old = currentAnnouncer
         currentAnnouncer = name
         if debugMode then
             Print("[Announcer] A new announcer for this Raid got selected: |cffffffff" .. (name or "None") .. "|r")
+        end
+        -- Handoff: if I was the announcer and someone else took over, give them my whisper ruleset
+        -- (a just-joined announcer missed the earlier NW broadcasts).
+        if old == UnitName("player") and name and name ~= UnitName("player") then
+            SendNoWhisperHandoff(name)
         end
         -- Announcer changed (None, us, or a different player): re-enable the MS-Changed checkboxes
         -- until this announcer sends its first broadcast, which re-locks listeners (ApplyMSChangedSet).
@@ -229,10 +313,8 @@ end
 -- it has flagged as "MS Changed". Listeners collect every chunk of one transmission, then set
 -- their checkboxes to exactly that set (check listed names, uncheck the rest).
 
-local MSC_MSG_LIMIT   = 240   -- conservative cap (bytes) on an addon-message body (255 minus prefix/tab margin)
-local MSC_MARKER_ROOM = 8     -- bytes reserved for the trailing ";i/n" chunk marker
-
--- Announcer: pack the flagged raid members into <=limit chunks and broadcast them.
+-- Announcer: broadcast the flagged raid members (chunked). An empty "MSC:1/1" tells listeners
+-- to uncheck everyone.
 local function BroadcastMSChanges()
     if currentAnnouncer ~= UnitName("player") then return end   -- only the announcer sends
     if GetNumRaidMembers() == 0 then return end
@@ -248,29 +330,10 @@ local function BroadcastMSChanges()
         if flagged and inRaid[name] then names[#names + 1] = name end
     end
 
-    -- Greedily pack names (';'-joined) into chunk payloads within the byte budget.
-    local budget = MSC_MSG_LIMIT - 4 - MSC_MARKER_ROOM   -- 4 = "MSC:"
-    local chunks, cur = {}, ""
-    for _, name in ipairs(names) do
-        local piece = (cur == "") and name or (";" .. name)
-        if cur ~= "" and #cur + #piece > budget then
-            chunks[#chunks + 1] = cur
-            cur = name
-        else
-            cur = cur .. piece
-        end
-    end
-    chunks[#chunks + 1] = cur   -- always at least one chunk ("" = empty set -> listeners uncheck all)
-
-    local total = #chunks
-    for i = 1, total do
-        local marker  = i .. "/" .. total
-        local payload = chunks[i]
-        local body = (payload == "") and ("MSC:" .. marker) or ("MSC:" .. payload .. ";" .. marker)
-        SendAddon(body)
-    end
+    local bodies = ChunkNames("MSC:", names)
+    for _, body in ipairs(bodies) do SendAddon(body) end
     if debugMode then
-        Print("[MSChanged] Broadcast |cffffff00" .. #names .. "|r flagged member(s) in " .. total .. " message(s).")
+        Print("[MSChanged] Broadcast |cffffff00" .. #names .. "|r flagged member(s) in " .. #bodies .. " message(s).")
     end
 end
 
@@ -330,6 +393,50 @@ local function HandleMSChanged(sender, body)
     end
 end
 
+-- New announcer: reassemble a whisper-rules handoff and merge the opted-out names into our set.
+-- Only the current announcer applies it, only from a known addon user, current-raid names only.
+local function HandleNWSync(sender, body)
+    if currentAnnouncer ~= UnitName("player") then return end   -- only the (new) announcer consumes a handoff
+    if not addonUsers[sender] then return end                   -- from a raid addon user only
+
+    local tokens = {}
+    for tok in body:gmatch("[^;]+") do tokens[#tokens + 1] = tok end
+    if #tokens == 0 then return end
+    local idx, tot = tokens[#tokens]:match("^(%d+)/(%d+)$")
+    idx, tot = tonumber(idx), tonumber(tot)
+    if not idx or not tot or tot < 1 or idx < 1 or idx > tot then return end
+
+    local chunkNames = {}
+    for k = 1, #tokens - 1 do chunkNames[#chunkNames + 1] = tokens[k] end
+
+    if idx == 1 or nwsBuf.from ~= sender or nwsBuf.total ~= tot then
+        nwsBuf.from = sender; nwsBuf.total = tot; nwsBuf.seen = 0; nwsBuf.parts = {}
+    end
+    if not nwsBuf.parts[idx] then
+        nwsBuf.parts[idx] = chunkNames
+        nwsBuf.seen = nwsBuf.seen + 1
+    end
+
+    if nwsBuf.seen >= nwsBuf.total then
+        local inRaid = {}
+        for i = 1, GetNumRaidMembers() do
+            local n = GetRaidRosterInfo(i)
+            if n then inRaid[n] = true end
+        end
+        local merged = 0
+        for ci = 1, nwsBuf.total do
+            local part = nwsBuf.parts[ci]
+            if part then
+                for _, nm in ipairs(part) do
+                    if inRaid[nm] and not noWhisperUsers[nm] then noWhisperUsers[nm] = true; merged = merged + 1 end
+                end
+            end
+        end
+        nwsBuf.from = nil; nwsBuf.total = 0; nwsBuf.seen = 0; nwsBuf.parts = {}
+        if debugMode then Print("[NoWhisper] Handoff from |cffffff00" .. sender .. "|r merged; " .. merged .. " new opt-out(s).") end
+    end
+end
+
 -- Incoming addon traffic (prefix-filtered in the event handler caller).
 function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
     if prefix ~= ADDON_PREFIX or not msg or not sender or sender == "" then return end
@@ -366,6 +473,10 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
         end
     elseif msg:sub(1, 4) == "MSC:" then
         HandleMSChanged(sender, msg:sub(5))
+    elseif msg:sub(1, 7) == "NWSYNC:" then
+        HandleNWSync(sender, msg:sub(8))                     -- announcer handoff of the whisper ruleset
+    elseif msg:sub(1, 3) == "NW:" then
+        noWhisperUsers[sender] = (msg:sub(4) == "1") and true or nil  -- a player's own opt-out decision
     end
 end
 
@@ -374,9 +485,18 @@ function BiSTracker_AnnouncerOnRoster()
     if GetNumRaidMembers() == 0 then
         for k in pairs(addonUsers) do addonUsers[k] = nil end
         for k in pairs(skipUsers)  do skipUsers[k]  = nil end
+        for k in pairs(noWhisperUsers) do noWhisperUsers[k] = nil end
         addonUsers[UnitName("player")] = true
+        wasInRaid = false
         SetAnnouncer(nil)
         return
+    end
+    -- Not-in-raid -> in-raid transition (login into a raid or joining one): broadcast our own
+    -- opt-out, but only if it's set (absence means "whisper OK", so silent by default).
+    if not wasInRaid then
+        wasInRaid = true
+        noWhisperUsers[UnitName("player")] = LS().noWhisper and true or nil
+        if LS().noWhisper then NW_Send() end
     end
     local inRaid = {}
     for i = 1, GetNumRaidMembers() do
@@ -388,6 +508,9 @@ function BiSTracker_AnnouncerOnRoster()
     end
     for name in pairs(skipUsers) do
         if not inRaid[name] then skipUsers[name] = nil end
+    end
+    for name in pairs(noWhisperUsers) do
+        if name ~= UnitName("player") and not inRaid[name] then noWhisperUsers[name] = nil end
     end
     local valid = currentAnnouncer and IsOnline(currentAnnouncer)
               and (RankOf(currentAnnouncer) or -1) >= 1
@@ -590,8 +713,9 @@ function HandlePostedItem(sender, message)
     if not ls.informPlayers then return end
     for playerName, scanEntry in pairs(raidScanData) do
         local spec = scanEntry.spec
-        -- Skip players flagged "MS Changed": their scanned gear no longer matches their spec's BiS.
-        if spec and bisResults[spec] and not raidMSChanged[playerName] then
+        -- Skip players flagged "MS Changed" (scanned gear no longer matches spec BiS) and players
+        -- who opted out of whispers via "Announcer don't whisper me".
+        if spec and bisResults[spec] and not raidMSChanged[playerName] and not noWhisperUsers[playerName] then
             local label = GetNotifyUpgradeType(bisResults[spec], scanEntry.gear, itemName, postedIlvl)
             if label then
                 local msg = itemLink .. " is " .. UpgradePhrase(label) .. " for you."
@@ -613,6 +737,7 @@ function LootSettings_SyncUI()
     if lsWidgets.cbAutoScanLocks then lsWidgets.cbAutoScanLocks:SetChecked(ls.autoScanLocks) end
     if lsWidgets.cbSkipAnnouncer then lsWidgets.cbSkipAnnouncer:SetChecked(ls.skipAnnouncer) end
     if lsWidgets.cbMinimapPopup  then lsWidgets.cbMinimapPopup:SetChecked(ls.minimapPopup)   end
+    if lsWidgets.cbNoWhisper     then lsWidgets.cbNoWhisper:SetChecked(ls.noWhisper)         end
     if lsWidgets.aliasBox        then lsWidgets.aliasBox:SetText(BiSTrackerDB.accountAlias or "") end
     lsWidgets.cbReactNone:SetChecked(  ls.reactTo == "nothing")
     lsWidgets.cbReactRC:SetChecked(    ls.reactTo == "raidChat")
@@ -972,7 +1097,7 @@ end
 
 function BuildLootSettingsUI(c)
     local HEADER_H   = 22
-    local GEN_BODY_H = 160   -- General Settings body height (incl. empty row after notify + trailing empty row)
+    local GEN_BODY_H = 204   -- General Settings body height (incl. empty row after notify + trailing empty row)
     local BODY_H     = 312   -- Announce Settings body height
     local RAID_H     = 44
 
@@ -1038,9 +1163,15 @@ function BuildLootSettingsUI(c)
     FS(genBody, 28,  -96, COLOR.white .. " Minimap Popup|r")
     FS(genBody, 190, -96, COLOR.grey .. "(If disabled, hovering the minimap icon wont show your characters instance locks)|r")
 
-    local cbSkipAnnouncer = CB(genBody, 10, -118)
-    FS(genBody, 28,  -118, COLOR.white .. " Never be Announcer|r")
-    FS(genBody, 190, -118, COLOR.grey .. "(If enabled, you can never be the announcer of the raid)|r")
+    -- empty spacer row at -118
+
+    local cbNoWhisper = CB(genBody, 10, -140)
+    FS(genBody, 28,  -140, COLOR.white .. " Don't whisper me|r")
+    FS(genBody, 190, -140, COLOR.grey .. "(If enabled, the announcer will never whisper you for item upgrades)|r")
+
+    local cbSkipAnnouncer = CB(genBody, 10, -162)
+    FS(genBody, 28,  -162, COLOR.white .. " Never be Announcer|r")
+    FS(genBody, 190, -162, COLOR.grey .. "(If enabled, you can never be the announcer of the raid)|r")
 
     -- ============ Export Settings ============
     local EXP_BODY_H = 150
@@ -1247,6 +1378,7 @@ function BuildLootSettingsUI(c)
     lsWidgets.cbAutoScanLocks = cbAutoScanLocks
     lsWidgets.cbSkipAnnouncer = cbSkipAnnouncer
     lsWidgets.cbMinimapPopup  = cbMinimapPopup
+    lsWidgets.cbNoWhisper     = cbNoWhisper
     lsWidgets.aliasBox        = aliasBox
     lsWidgets.cbReactNone   = cbReactNone;   lsWidgets.cbReactRC    = cbReactRC
     lsWidgets.cbReactRW     = cbReactRW
@@ -1286,6 +1418,13 @@ function BuildLootSettingsUI(c)
     end)
     cbMinimapPopup:SetScript("OnClick", function()
         LS().minimapPopup = cbMinimapPopup:GetChecked() and true or false
+    end)
+    -- Don't-whisper-me: update instantly (responsive + persisted), then broadcast on a 5s throttle.
+    cbNoWhisper:SetScript("OnClick", function()
+        local on = cbNoWhisper:GetChecked() and true or false
+        LS().noWhisper = on
+        noWhisperUsers[UnitName("player")] = on and true or nil   -- keep our own entry in sync locally
+        ScheduleNoWhisperBroadcast()
     end)
     -- Skip Announcer: re-advertise candidacy to the raid (SKIP/HELLO) and re-elect.
     cbSkipAnnouncer:SetScript("OnClick", function()
