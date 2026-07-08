@@ -280,6 +280,17 @@ SlashCmdList["BISTRACKER"] = function(msg)
         if BiSTrackerDB.weeklyReset then BiSTrackerDB.weeklyReset.lastReset = 0 end
         CheckAndApplyWeeklyReset()
         if mainFrame and mainFrame:IsShown() then BiSTracker_RefreshList() end
+    elseif cmd == "crs" then
+        local had
+        if raidScanFrame then
+            had = raidScanFrame:ClearSnapshot()   -- wipes live data + snapshot/MS-Changed/whisper stores
+        else
+            had = (BiSTrackerDB.raidSnapshot or BiSTrackerDB.msChanged or BiSTrackerDB.whisperOptOut) ~= nil
+            BiSTrackerDB.raidSnapshot  = nil
+            BiSTrackerDB.msChanged     = nil
+            BiSTrackerDB.whisperOptOut = nil
+        end
+        Print(had and "Raid state cleared (snapshot, MS-Changed, whisper flags)." or "No saved raid state to clear.")
     elseif cmd == "help" then
         Print("|cffffff00BiSTracker commands:|r")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis|r - Toggle main window")
@@ -294,6 +305,7 @@ SlashCmdList["BISTRACKER"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis fakelocks|r - [Debug] Lock all instances for current char")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis fakelocks 1-6|r - [Debug] Lock one instance (1=ICC25 2=ICC10 3=RS25 4=RS10 5=TOC25 6=TOC10)")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis weekreset|r - [Debug] Force weekly reset (clears all locks)")
+        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis crs|r - [Debug] Clear saved raid state (snapshot, MS-Changed, whisper flags)")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis help|r - Show this help")
     elseif cmd == "reset" then
         local angle = BiSTrackerDB.minimapAngle

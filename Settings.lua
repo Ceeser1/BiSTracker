@@ -37,7 +37,7 @@ local nwLastSent = false    -- last opt-out value we actually broadcast (idempot
 local wasInRaid = false     -- tracks the not-in-raid -> in-raid transition to broadcast on join
 -- Announcer's per-player Whisper? overrides. Session-only (NOT persisted) so every session defaults
 -- to "on" (whisper); the persistent off-authority is each player's own NW opt-out broadcast.
-local whisperOff = {}       -- [name] = true: announcer chose not to whisper this player (this session)
+local whisperOn = {}        -- [name] = false: announcer chose NOT to whisper this player (session; unset/true = whisper)
 
 function LS()
     BiSTrackerDB.lootSettings = BiSTrackerDB.lootSettings or {}
@@ -181,8 +181,11 @@ local function LoadWhisperOptOut()
         local n = GetRaidRosterInfo(i)
         if n then roster[n] = true end
     end
+    local me = UnitName("player")
     for name, v in pairs(store.names) do
-        if v and roster[name] then noWhisperUsers[name] = true end
+        -- Skip our own entry: the local player's whisper state is always derived from
+        -- LS().allowWhispers, so a stale stored value must never override the live setting.
+        if v and roster[name] and name ~= me then noWhisperUsers[name] = true end
     end
 end
 
@@ -560,7 +563,7 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
         noWhisperUsers[sender] = off and true or nil  -- a player's own opt-out decision
         SaveWhisperOptOut(sender, off)                -- save their choice so we remember it across relog
         if debugMode then
-            Print("[NoWhisper] Received new whisperOff from |cffffff00" .. sender .. "|r: " .. (off and "True" or "False"))
+            Print("[NoWhisper] Received new whisperOn from |cffffff00" .. sender .. "|r: " .. (off and "False" or "True"))
         end
         if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
             BiSTracker_RefreshRaidList()   -- reflect the locked/unlocked Whisper? checkbox live
@@ -583,7 +586,7 @@ function BiSTracker_AnnouncerOnRoster()
     -- opt-out, but only if it's set (absence means "whisper OK", so silent by default).
     if not wasInRaid then
         wasInRaid = true
-        noWhisperUsers[UnitName("player")] = LS().allowWhispers and nil or true
+        noWhisperUsers[UnitName("player")] = (not LS().allowWhispers) and true or nil
         if not LS().allowWhispers then NW_Send() end
     end
     local inRaid = {}
@@ -804,7 +807,7 @@ function HandlePostedItem(sender, message)
         -- Skip players flagged "MS Changed" (scanned gear no longer matches spec BiS), players who
         -- opted out themselves ("Don't whisper me"), and players we unchecked in the Whisper? column.
         if spec and bisResults[spec] and not raidMSChanged[playerName]
-           and not noWhisperUsers[playerName] and not whisperOff[playerName] then
+           and not noWhisperUsers[playerName] and whisperOn[playerName] ~= false then
             local label = GetNotifyUpgradeType(bisResults[spec], scanEntry.gear, itemName, postedIlvl)
             if label then
                 local msg = itemLink .. " is " .. UpgradePhrase(label) .. " for you."
@@ -1102,14 +1105,18 @@ function BiSTracker_RefreshRaidList()
 
         -- Whisper? checkbox: checked = whisper. Default ON; the only persistent off-authority is the
         -- player's own "Don't whisper me" broadcast. The announcer's manual override is session-only.
+        -- Own row included: it's gated by noWhisperUsers[self], which the "Allow announcer whispers"
+        -- setting drives. The Whisper? box only ever sets whisperOn (whether to actually whisper),
+        -- never the allow gate.
         local wName = m.name
         if noWhisperUsers[wName] then
-            -- Player opted out themselves (broadcast): locked off for everyone.
+            -- Opted out (own setting, or another player's broadcast): locked off for everyone.
             row.whisperCheck:SetChecked(false)
             SetRaidCheckEnabled(row.whisperCheck, false)
-        elseif currentAnnouncer == UnitName("player") then
-            -- Only the announcer's choices take effect, so only the announcer can edit them.
-            row.whisperCheck:SetChecked(not whisperOff[wName])
+        elseif currentAnnouncer == nil or currentAnnouncer == UnitName("player") then
+            -- The announcer edits these; when no announcer is elected yet (fresh raid / after
+            -- clearing the snapshot) everyone is editable and defaults to ON.
+            row.whisperCheck:SetChecked(whisperOn[wName] ~= false)
             SetRaidCheckEnabled(row.whisperCheck, true)
         else
             -- Listener: read-only. The announcer's per-player picks aren't broadcast, so show the
@@ -1118,7 +1125,7 @@ function BiSTracker_RefreshRaidList()
             SetRaidCheckEnabled(row.whisperCheck, false)
         end
         row.whisperCheck:SetScript("OnClick", function(self)
-            whisperOff[wName] = self:GetChecked() and nil or true
+            whisperOn[wName] = self:GetChecked() and true or false
         end)
         row.whisperCheck:Show()
 
@@ -1212,7 +1219,7 @@ function BiSTracker_RefreshRaidList()
     if not note then
         note = mlContent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         note:SetWidth(600); note:SetJustifyH("LEFT")
-        note:SetText(COLOR.grey .. "* If players changed MS the Addon will not compare posted items to their gear/not inform them for possible upgrades since their spec doesn't match desired items.|r")
+        note:SetText(COLOR.grey .. "* If players changed MS the Addon wont compare posted items to their gear nor informs them for possible upgrades since their spec doesn't match desired items.|r")
         local nf, _, nfl = note:GetFont()
         if nf then note:SetFont(nf, 9, nfl) end   -- smaller than GameFontNormalSmall
         mlContent.raidNote = note
@@ -1364,8 +1371,8 @@ function BuildLootSettingsUI(c)
     local annInfo = body:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     annInfo:SetPoint("TOPLEFT", body, "TOPLEFT", 10, -32)
     annInfo:SetWidth(616); annInfo:SetJustifyH("CENTER")
-    annInfo:SetText(COLOR.lgrey .. "Only the Announcer is able to auto-react to posted items. Must have lead or assist. Hierarchy: Raid Lead > Master Looter > Assist|r")
-    local announcerLbl = FS(body, 10, -64, COLOR.legendary .. "Current selected Announcer for this Raid:|r " .. COLOR.grey .. "None|r")
+    annInfo:SetText(COLOR.lgrey .. "Only the Announcer is able to auto-react to posted items nand edit Whisper? + MS Changes at 'Players in this Raid'. Must have lead or assist. Hierarchy: Raid Lead > Master Looter > Assist|r")
+    local announcerLbl = FS(body, 10, -80, COLOR.legendary .. "Current selected Announcer for this Raid:|r " .. COLOR.grey .. "None|r")
     announcerLbl:SetWidth(616); announcerLbl:SetJustifyH("LEFT")
 
     -- Section 1
@@ -1559,9 +1566,12 @@ function BuildLootSettingsUI(c)
     cbAllowWhisper:SetScript("OnClick", function()
         local allow = cbAllowWhisper:GetChecked() and true or false
         LS().allowWhispers = allow
-        noWhisperUsers[UnitName("player")] = allow and nil or true   -- opted out only if NOT allowed
+        noWhisperUsers[UnitName("player")] = (not allow) and true or nil   -- opted out only if NOT allowed
         SaveWhisperOptOut(UnitName("player"), not allow)             -- persist our own choice too
         ScheduleNoWhisperBroadcast()
+        if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+            BiSTracker_RefreshRaidList()   -- gate changed: refresh our own Whisper? row
+        end
     end)
     -- Skip Announcer: re-advertise candidacy to the raid (SKIP/HELLO) and re-elect.
     cbSkipAnnouncer:SetScript("OnClick", function()
@@ -1897,6 +1907,38 @@ do
         if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
             BiSTracker_RefreshRaidList()
         end
+    end
+
+    -- [Debug] Drop the persisted snapshot AND the live in-memory scan results, then start a
+    -- fresh rescan. Wiping raidScanData is essential: OnQueueDrained -> SaveRaidSnapshot would
+    -- otherwise re-persist the still-loaded members on the next drain, so clearing only the DB
+    -- lets a background scan resurrect the snapshot before the next /reload. Returns whether a
+    -- snapshot actually existed. Used by /bis crs.
+    function raidScanFrame:ClearSnapshot()
+        local had = (BiSTrackerDB.raidSnapshot or BiSTrackerDB.msChanged or BiSTrackerDB.whisperOptOut) ~= nil
+        -- Drop every restorable raid store, or LoadSnapshotOnce would resurrect MS-Changed /
+        -- whisper opt-outs on the next raid even though the gear snapshot is gone.
+        BiSTrackerDB.raidSnapshot  = nil
+        BiSTrackerDB.msChanged     = nil
+        BiSTrackerDB.whisperOptOut = nil
+        raidScanData = {}; raidScanQueue = {}
+        for k in pairs(raidMSChanged)  do raidMSChanged[k]  = nil end
+        for k in pairs(noWhisperUsers) do noWhisperUsers[k] = nil end
+        for k in pairs(whisperOn)      do whisperOn[k]      = nil end
+        currentUnit = nil; currentName = nil; currentEntry = nil
+        rebuildActive = false; rebuildTimer = 0
+        fullScanInProgress = false; onlineStatus = {}
+        snapshotLoadAttempted = true   -- snapshot is gone; don't try to restore one
+        mainTimer = 0; inspectTimer = 0; connTimer = 0
+        if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+            BiSTracker_RefreshRaidList()
+        end
+        if LS().scanRaid and GetNumRaidMembers() > 0 then
+            self:TriggerRebuild()   -- fresh full rescan; nothing to restore now
+        else
+            self:Hide()
+        end
+        return had
     end
 
     -- Called on RAID_ROSTER_UPDATE: detects joins and leaves incrementally.
