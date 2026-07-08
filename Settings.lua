@@ -400,11 +400,14 @@ local function SetAnnouncer(name)
     UpdateAnnouncerUI()
 end
 
--- Run the election; if I'm the winner, broadcast it so everyone else stands down.
-function BiSTracker_RefreshAnnouncer()
+-- Run the election and adopt the result locally (SetAnnouncer also performs any whisper-ruleset
+-- handoff). If I'm the winner, broadcast ANN so everyone else stands down -- UNLESS announce == false,
+-- used on the HELLO path: receiving a HELLO can only ever make me lose/keep the role, never newly win
+-- it, so my ANN there would be a pure re-affirmation. The newcomer learns the announcer via its own REQ.
+function BiSTracker_RefreshAnnouncer(announce)
     local elected = ElectAnnouncer()
     SetAnnouncer(elected)
-    if elected and elected == UnitName("player") and GetNumRaidMembers() > 0 then
+    if announce ~= false and elected and elected == UnitName("player") and GetNumRaidMembers() > 0 then
         SendAddon("ANN:" .. elected)
     end
 end
@@ -619,7 +622,7 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
         NoteVersion(pVer, sender)           -- version check: note their version, notify if it beats ours
         skipUsers[sender] = nil             -- they're an active candidate again
         if isBroadcast then SendAddon(PresenceMsg(), sender) end   -- directed reply: our candidacy + version
-        if newUser then BiSTracker_RefreshAnnouncer() end          -- a genuinely new addon user: re-elect
+        if newUser then BiSTracker_RefreshAnnouncer(false) end     -- new addon user: re-elect locally only; their own REQ fetches the ANN
     elseif pKind == "SKIP" then
         NoteVersion(pVer, sender)           -- version check: note their version, notify if it beats ours
         skipUsers[sender] = true            -- sender opted out of being announcer
