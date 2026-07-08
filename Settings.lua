@@ -54,6 +54,7 @@ function LS()
     if ls.skipAnnouncer   == nil then ls.skipAnnouncer   = false      end
     if ls.minimapPopup    == nil then ls.minimapPopup    = true       end
     if ls.noWhisper       == nil then ls.noWhisper       = false      end  -- opt out of announcer upgrade whispers
+    ls.whisperOff = ls.whisperOff or {}   -- announcer's per-player "don't whisper" overrides, keyed by name (persisted)
     -- Settings-window section collapse state (persist so it survives relog; default expanded)
     if ls.genCollapsed    == nil then ls.genCollapsed    = false      end
     if ls.expCollapsed    == nil then ls.expCollapsed    = false      end
@@ -277,12 +278,11 @@ local function SetAnnouncer(name)
             SendNoWhisperHandoff(name)
         end
         -- Announcer changed (None, us, or a different player): re-enable the MS-Changed checkboxes
-        -- until this announcer sends its first broadcast, which re-locks listeners (ApplyMSChangedSet).
-        if mscLocked then
-            mscLocked = false
-            if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
-                BiSTracker_RefreshRaidList()
-            end
+        -- until this announcer's first broadcast re-locks listeners (ApplyMSChangedSet). Always refresh
+        -- so the Whisper? column's read-only state (only the announcer may edit it) updates live too.
+        mscLocked = false
+        if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+            BiSTracker_RefreshRaidList()
         end
     end
     UpdateAnnouncerUI()
@@ -476,7 +476,14 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
     elseif msg:sub(1, 7) == "NWSYNC:" then
         HandleNWSync(sender, msg:sub(8))                     -- announcer handoff of the whisper ruleset
     elseif msg:sub(1, 3) == "NW:" then
-        noWhisperUsers[sender] = (msg:sub(4) == "1") and true or nil  -- a player's own opt-out decision
+        local off = (msg:sub(4) == "1")
+        noWhisperUsers[sender] = off and true or nil  -- a player's own opt-out decision
+        if debugMode then
+            Print("[NoWhisper] Received new whisperOff from |cffffff00" .. sender .. "|r: " .. (off and "True" or "False"))
+        end
+        if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+            BiSTracker_RefreshRaidList()   -- reflect the locked/unlocked Whisper? checkbox live
+        end
     end
 end
 
@@ -713,9 +720,10 @@ function HandlePostedItem(sender, message)
     if not ls.informPlayers then return end
     for playerName, scanEntry in pairs(raidScanData) do
         local spec = scanEntry.spec
-        -- Skip players flagged "MS Changed" (scanned gear no longer matches spec BiS) and players
-        -- who opted out of whispers via "Announcer don't whisper me".
-        if spec and bisResults[spec] and not raidMSChanged[playerName] and not noWhisperUsers[playerName] then
+        -- Skip players flagged "MS Changed" (scanned gear no longer matches spec BiS), players who
+        -- opted out themselves ("Don't whisper me"), and players we unchecked in the Whisper? column.
+        if spec and bisResults[spec] and not raidMSChanged[playerName]
+           and not noWhisperUsers[playerName] and not ls.whisperOff[playerName] then
             local label = GetNotifyUpgradeType(bisResults[spec], scanEntry.gear, itemName, postedIlvl)
             if label then
                 local msg = itemLink .. " is " .. UpgradePhrase(label) .. " for you."
@@ -933,6 +941,19 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
     panel.sep:SetHeight(panelH - 6)
 end
 
+-- Enable/disable a raid-list checkbox, tinting the interactive (non-read-only) ones green (#aaffaa)
+-- so it's obvious at a glance which checkboxes the viewer can actually change.
+local function SetRaidCheckEnabled(check, enabled)
+    local nt = check:GetNormalTexture()
+    if enabled then
+        check:Enable()
+        if nt then nt:SetVertexColor(0, 1, 0) end            -- #00ff00
+    else
+        check:Disable()
+        if nt then nt:SetVertexColor(1, 1, 1) end            -- default (greyed by the disabled texture)
+    end
+end
+
 function BiSTracker_RefreshRaidList()
     local mlContent = mainFrame and mainFrame.mlContent
     if not mlContent or not mlContent.raidListY then return end
@@ -963,20 +984,24 @@ function BiSTracker_RefreshRaidList()
             bg:SetTexture(0, 0, 0, (rowIdx % 2 == 0) and 0.2 or 0.08)
             row.nameLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             row.nameLbl:SetPoint("LEFT", row, "LEFT", 8, 0)
-            row.nameLbl:SetWidth(150); row.nameLbl:SetJustifyH("LEFT")
+            row.nameLbl:SetWidth(110); row.nameLbl:SetJustifyH("LEFT")   -- 40px narrower to free space
             row.specLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            row.specLbl:SetPoint("LEFT", row, "LEFT", 150, 0)
+            row.specLbl:SetPoint("LEFT", row, "LEFT", 110, 0)            -- moved 40px left
             row.specLbl:SetWidth(150); row.specLbl:SetJustifyH("LEFT")
+            row.whisperCheck = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+            row.whisperCheck:SetWidth(18); row.whisperCheck:SetHeight(18)
+            row.whisperCheck:ClearAllPoints()
+            row.whisperCheck:SetPoint("CENTER", row, "LEFT", 303, 0)     -- centered under "Whisper?" header
             row.msCheck = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
             row.msCheck:SetWidth(18); row.msCheck:SetHeight(18)
             row.msCheck:ClearAllPoints()
-            row.msCheck:SetPoint("CENTER", row, "LEFT", 320, 0)   -- centered under "MS Changed*" header
+            row.msCheck:SetPoint("CENTER", row, "LEFT", 388, 0)   -- centered under "MS Changed*" header
             row.bisLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            row.bisLbl:SetPoint("LEFT", row, "LEFT", 390, 0)
-            row.bisLbl:SetWidth(90); row.bisLbl:SetJustifyH("CENTER")
+            row.bisLbl:SetPoint("LEFT", row, "LEFT", 433, 0)
+            row.bisLbl:SetWidth(80); row.bisLbl:SetJustifyH("CENTER")   -- centered at 473
             row.gsLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            row.gsLbl:SetPoint("LEFT", row, "LEFT", 493, 0)
-            row.gsLbl:SetWidth(90); row.gsLbl:SetJustifyH("CENTER")
+            row.gsLbl:SetPoint("LEFT", row, "LEFT", 518, 0)
+            row.gsLbl:SetWidth(80); row.gsLbl:SetJustifyH("CENTER")     -- centered at 558
             row.toggleBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
             row.toggleBtn:SetWidth(26); row.toggleBtn:SetHeight(18)
             row.toggleBtn:SetPoint("RIGHT", row, "RIGHT", 0, 0)
@@ -994,6 +1019,28 @@ function BiSTracker_RefreshRaidList()
             row.nameLbl:SetText("|cff666666" .. (m.name or "?") .. "|r")
         end
 
+        -- Whisper? checkbox: announcer's per-player toggle (checked = whisper). Persisted in LS().whisperOff.
+        -- If the player broadcast their own "Don't whisper me", their choice is authoritative: lock it off.
+        local wName = m.name
+        if noWhisperUsers[wName] then
+            -- Player opted out themselves (broadcast): locked off for everyone.
+            row.whisperCheck:SetChecked(false)
+            SetRaidCheckEnabled(row.whisperCheck, false)
+        elseif currentAnnouncer == UnitName("player") then
+            -- Only the announcer's choices take effect, so only the announcer can edit them.
+            row.whisperCheck:SetChecked(not LS().whisperOff[wName])
+            SetRaidCheckEnabled(row.whisperCheck, true)
+        else
+            -- Listener: read-only. The announcer's per-player picks aren't broadcast, so show the
+            -- default (whisper) for anyone who hasn't opted out.
+            row.whisperCheck:SetChecked(true)
+            SetRaidCheckEnabled(row.whisperCheck, false)
+        end
+        row.whisperCheck:SetScript("OnClick", function(self)
+            LS().whisperOff[wName] = self:GetChecked() and nil or true
+        end)
+        row.whisperCheck:Show()
+
         -- MS Changed checkbox: one per player, state kept for the session (unchecked by default).
         local msName = m.name
         row.msCheck:SetChecked(raidMSChanged[msName] and true or false)
@@ -1001,7 +1048,7 @@ function BiSTracker_RefreshRaidList()
             raidMSChanged[msName] = self:GetChecked() and true or false
         end)
         -- Listeners bound to an announcer's broadcast can't edit; enabled when no announcer / we're it.
-        if mscLocked then row.msCheck:Disable() else row.msCheck:Enable() end
+        SetRaidCheckEnabled(row.msCheck, not mscLocked)
         row.msCheck:Show()
 
         local scanEntry = raidScanData[m.name]
@@ -1314,19 +1361,25 @@ function BuildLootSettingsUI(c)
     raidCharHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 8, -26)
     raidCharHdr:SetText(COLOR.legendary .. "Character|r")
     local raidSpecHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidSpecHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 150, -26)
+    raidSpecHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 110, -26)   -- moved 40px left to free space
     raidSpecHdr:SetText(COLOR.legendary .. "Spec|r")
+    -- Four columns evenly spread across the 340px between Spec's end (260) and the toggle button (600):
+    -- 85px slots centered at 303 / 388 / 473 / 558 (headers 80px wide, centered on those points).
+    local raidWhisperHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    raidWhisperHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 263, -26)
+    raidWhisperHdr:SetWidth(80); raidWhisperHdr:SetJustifyH("CENTER")
+    raidWhisperHdr:SetText(COLOR.legendary .. "Whisper?|r")
     local raidMsHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidMsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 280, -26)
+    raidMsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 348, -26)
     raidMsHdr:SetWidth(80); raidMsHdr:SetJustifyH("CENTER")
     raidMsHdr:SetText(COLOR.legendary .. "MS Changed*|r")
     local raidBisHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidBisHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 390, -26)
-    raidBisHdr:SetWidth(90); raidBisHdr:SetJustifyH("CENTER")
+    raidBisHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 433, -26)
+    raidBisHdr:SetWidth(80); raidBisHdr:SetJustifyH("CENTER")
     raidBisHdr:SetText(COLOR.legendary .. "BiS Items|r")
     local raidGsHdr = raidHdrFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    raidGsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 493, -26)
-    raidGsHdr:SetWidth(90); raidGsHdr:SetJustifyH("CENTER")
+    raidGsHdr:SetPoint("TOPLEFT", raidHdrFrame, "TOPLEFT", 518, -26)
+    raidGsHdr:SetWidth(80); raidGsHdr:SetJustifyH("CENTER")
     raidGsHdr:SetText(COLOR.legendary .. "GearScore|r")
     local raidSep = raidHdrFrame:CreateTexture(nil, "ARTWORK")
     raidSep:SetHeight(1)
