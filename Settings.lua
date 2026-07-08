@@ -134,6 +134,88 @@ local function ChunkNames(prefix, names)
     return bodies
 end
 
+-- ============================================================
+-- VERSION CHECK  (rides on the HELLO/SKIP presence heartbeat)
+-- ============================================================
+-- Presence messages carry the sender's version (HELLO:1.7.2 / SKIP:1.7.2). When we learn a peer is
+-- running a newer version, we wait a few seconds to collect all replies (so a laggy client's reply
+-- still counts), then tell the user ONCE per session which newest version is out there.
+local ADDON_VERSION     = GetAddOnMetadata(ADDON_PREFIX, "Version") or "?"
+local VER_COLLECT_DELAY = 3.0
+local versionNotified   = false   -- have we already told the user this session? (spam guard)
+local highestPeerVer    = nil     -- highest peer version string seen so far
+local highestPeerName   = nil     -- name of the peer who reported highestPeerVer
+
+-- Parse "1.7.10" -> {1,7,10}; ignores any non-numeric junk.
+local function ParseVersion(s)
+    local t = {}
+    for n in tostring(s):gmatch("%d+") do t[#t + 1] = tonumber(n) end
+    return t
+end
+
+-- True if version string `a` is strictly older than `b` (numeric, component-wise; 1.7.9 < 1.7.10).
+local function VersionLess(a, b)
+    local A, B = ParseVersion(a), ParseVersion(b)
+    local n = math.max(#A, #B)
+    for i = 1, n do
+        local x, y = A[i] or 0, B[i] or 0
+        if x ~= y then return x < y end
+    end
+    return false
+end
+
+-- Accept only plain dotted-numeric versions (reject letters / overlong junk from a bad actor).
+local function IsValidVersion(s)
+    return type(s) == "string" and #s > 0 and #s <= 16 and s:match("^%d+[%d%.]*$") ~= nil
+end
+
+-- Collection window: fires VER_COLLECT_DELAY after the first peer version is seen, then decides once.
+local verFrame = CreateFrame("Frame")
+local verAccum = 0
+verFrame:Hide()
+verFrame:SetScript("OnUpdate", function(self, elapsed)
+    verAccum = verAccum + elapsed
+    if verAccum < VER_COLLECT_DELAY then return end
+    self:Hide()
+    if highestPeerVer and VersionLess(ADDON_VERSION, highestPeerVer) then
+        if not versionNotified then
+            versionNotified = true
+            if debugMode then Print("[Version] V" .. highestPeerVer .. " from " .. tostring(highestPeerName) .. " is newer. Notifying...") end
+            Print(COLOR.legendary .. "A newer version (v" .. highestPeerVer .. ") of BiSTracker is available! Get it from github.com/Ceeser1/BiSTracker|r")
+        end
+    elseif debugMode then
+        Print("[Version] V" .. ADDON_VERSION .. " is the latest.")
+    end
+end)
+
+-- Note a peer's advertised version (from any HELLO/SKIP). Tracks the newest version + who reported
+-- it and opens a short collection window; when it elapses we compare against our own version once.
+-- No-op once we've already notified this session.
+local function NoteVersion(ver, sender)
+    if versionNotified then return end
+    if not IsValidVersion(ver) then return end
+    if not highestPeerVer or VersionLess(highestPeerVer, ver) then
+        highestPeerVer  = ver
+        highestPeerName = sender
+    end
+    if not verFrame:IsShown() then verAccum = 0; verFrame:Show() end   -- collect, then decide on elapse
+end
+
+-- Our own presence body, version-tagged: "HELLO:<ver>" (candidate) or "SKIP:<ver>" (opted out).
+local function PresenceMsg()
+    return (LS().skipAnnouncer and "SKIP:" or "HELLO:") .. ADDON_VERSION
+end
+
+-- Split a presence message into (kind, version). Accepts the versioned form (HELLO:1.7.2) and the
+-- bare legacy form (HELLO) sent by pre-1.7.2 clients, which have no version to report.
+local function ParsePresence(msg)
+    if msg == "HELLO" then return "HELLO", nil end
+    if msg == "SKIP"  then return "SKIP",  nil end
+    if msg:sub(1, 6) == "HELLO:" then return "HELLO", msg:sub(7) end
+    if msg:sub(1, 5) == "SKIP:"  then return "SKIP",  msg:sub(6) end
+    return nil, nil
+end
+
 -- Broadcast our own whisper decision to the raid (NW:1 = opted out / not allowed, NW:0 = allowed).
 local function NW_Send()
     if GetNumRaidMembers() == 0 then return end
@@ -330,9 +412,9 @@ end
 -- Called 4s after entering world: advertise presence (SKIP if opted out, else HELLO) and elect.
 function BiSTracker_AnnouncerInit()
     addonUsers[UnitName("player")] = true
-    if GetNumRaidMembers() > 0 then
-        SendAddon(LS().skipAnnouncer and "SKIP" or "HELLO")
-    end
+    -- Presence (HELLO/SKIP) is broadcast by the roster hook's not-in-raid -> in-raid transition,
+    -- which reliably fires at login-in-raid and on forming/joining a raid. We deliberately do NOT
+    -- send it here: that would double the login broadcast and re-fire on every zone-in.
     BiSTracker_RefreshAnnouncer()
 end
 
@@ -525,17 +607,24 @@ function BiSTracker_OnAddonMessage(prefix, msg, channel, sender)
     if prefix ~= ADDON_PREFIX or not msg or not sender or sender == "" then return end
     local newUser = (addonUsers[sender] == nil) and (sender ~= UnitName("player"))
     addonUsers[sender] = true
+    local pKind, pVer = ParsePresence(msg)
 
-    if msg == "HELLO" then
+    -- A presence BROADCAST (RAID) means the sender just (re)joined/relogged. Reply with our own
+    -- version-tagged presence directly to them so they learn our version -- even when we already
+    -- knew them (newUser=false on relog, since a logout doesn't remove them from the roster). We
+    -- never reply to a directed WHISPER: that reply IS the answer, and replying again would loop.
+    local isBroadcast = pKind and channel ~= "WHISPER" and sender ~= UnitName("player")
+
+    if pKind == "HELLO" then
+        NoteVersion(pVer, sender)           -- version check: note their version, notify if it beats ours
         skipUsers[sender] = nil             -- they're an active candidate again
-        if newUser then
-            SendAddon(LS().skipAnnouncer and "SKIP" or "HELLO", sender)  -- directed reply: my candidacy status
-            BiSTracker_RefreshAnnouncer()   -- re-elect; broadcasts ANN to the whole raid if I win (newcomer included)
-        end
-    elseif msg == "SKIP" then
-        -- Sender opted out: record and re-elect (a new winner re-broadcasts ANN).
-        skipUsers[sender] = true
-        BiSTracker_RefreshAnnouncer()
+        if isBroadcast then SendAddon(PresenceMsg(), sender) end   -- directed reply: our candidacy + version
+        if newUser then BiSTracker_RefreshAnnouncer() end          -- a genuinely new addon user: re-elect
+    elseif pKind == "SKIP" then
+        NoteVersion(pVer, sender)           -- version check: note their version, notify if it beats ours
+        skipUsers[sender] = true            -- sender opted out of being announcer
+        if isBroadcast then SendAddon(PresenceMsg(), sender) end   -- directed reply: our candidacy + version
+        BiSTracker_RefreshAnnouncer()       -- re-elect (a new winner re-broadcasts ANN)
     elseif msg:sub(1, 4) == "ANN:" then
         local name = msg:sub(5)
         if name ~= "" then
@@ -588,6 +677,9 @@ function BiSTracker_AnnouncerOnRoster()
         wasInRaid = true
         noWhisperUsers[UnitName("player")] = (not LS().allowWhispers) and true or nil
         if not LS().allowWhispers then NW_Send() end
+        -- (Re)advertise our presence+version now that we're in a raid. Without this, forming/joining
+        -- a raid after login would never emit a HELLO (login-time init already ran out of raid).
+        SendAddon(PresenceMsg())
     end
     local inRaid = {}
     for i = 1, GetNumRaidMembers() do
@@ -1590,7 +1682,7 @@ function BuildLootSettingsUI(c)
     cbSkipAnnouncer:SetScript("OnClick", function()
         LS().skipAnnouncer = cbSkipAnnouncer:GetChecked() and true or false
         if GetNumRaidMembers() > 0 then
-            SendAddon(LS().skipAnnouncer and "SKIP" or "HELLO")
+            SendAddon(PresenceMsg())
         end
         BiSTracker_RefreshAnnouncer()
     end)

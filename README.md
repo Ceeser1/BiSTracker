@@ -1,6 +1,6 @@
 # BiS Tracker
 
-> **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.7.1 · **Author:** Ceeser · No external addons/libraries needed.
+> **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.7.2 · **Author:** Ceeser · No external addons/libraries needed.
 
 ---
 

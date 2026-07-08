@@ -2,7 +2,7 @@
 ## Title: BiS Tracker
 ## Notes: Tracks characters, specs, instance lockouts and equipped gear vs BiS list
 ## Author: Ceeser
-## Version: 1.7.1
+## Version: 1.7.2
 ## SavedVariables: BiSTrackerDB
 
 Constants.lua
