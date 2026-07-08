@@ -1,6 +1,7 @@
 -- BiSTracker: core state, events, retry frame, slash commands
 
 local ADDON_NAME = "BiSTracker"
+local ADDON_VERSION = GetAddOnMetadata(ADDON_NAME, "Version") or "?"   -- pulled from the .toc
 
 
 -- ============================================================
@@ -68,6 +69,19 @@ initDelayFrame:SetScript("OnUpdate", function(self, elapsed)
     end
 end)
 
+-- Delay the greeting a fraction of a second so it lands after the login chat clutter.
+local greetFrame = CreateFrame("Frame")
+local greetAccum = 0
+local GREET_DELAY = 0.5
+greetFrame:Hide()
+greetFrame:SetScript("OnUpdate", function(self, elapsed)
+    greetAccum = greetAccum + elapsed
+    if greetAccum >= GREET_DELAY then
+        self:Hide()
+        Print("Version |cffffffff" .. ADDON_VERSION .. "|r loaded! Use |cffaaaaaa/bis|r or click the minimap icon to open. Use |cffaaaaaa/bis help|r for a list of commands.")
+    end
+end)
+
 local rescanFrame    = CreateFrame("Frame")
 local rescanAccum    = 0
 local rescanDelay    = 1.0
@@ -129,7 +143,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         BiSTrackerDB = BiSTrackerDB or { characters = {} }
         debugMode = (BiSTrackerDB.debugMode == true)   -- restore saved debug state
         CreateMinimapButton()
-        Print("Loaded! Use |cffaaaaaa/bis|r or click the minimap icon.")
+        greetAccum = 0; greetFrame:Show()   -- print the greeting after a short delay
 
     elseif event == "PLAYER_LOGIN" then
         RequestRaidInfo()
@@ -202,9 +216,28 @@ end)
 -- SLASH COMMANDS
 -- ============================================================
 
+-- Debug-only commands: hidden from /bis help and only usable while debug mode is on.
+local function IsDebugCmd(cmd)
+    return cmd == "spec" or cmd == "gs" or cmd == "weekreset" or cmd == "crs"
+        or cmd == "fakelocks" or cmd:match("^fakelocks %d$") and true or false
+end
+
+-- Printed when debug mode is switched on, so the commands are discoverable without cluttering help.
+local function PrintDebugCommands()
+    Print("Debug Commands:")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis spec|r - Print currently detected spec")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis gs|r - Print GearScore breakdown")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis weekreset|r - Force weekly reset (clears all locks)")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis fakelocks|r - Lock all instances for current char")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis fakelocks 1-6|r - Lock one instance (1=ICC25 2=ICC10 3=RS25 4=RS10 5=TOC25 6=TOC10)")
+    DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis crs|r - Clear saved raid state (snapshot, MS-Changed, whisper flags)")
+end
+
 SLASH_BISTRACKER1 = "/bis"
 SlashCmdList["BISTRACKER"] = function(msg)
     local cmd = msg and msg:lower():match("^%s*(.-)%s*$") or ""
+    -- Debug commands are inert unless debug mode is on: no reaction at all when it's off.
+    if IsDebugCmd(cmd) and not debugMode then return end
     if cmd == "scan" then
         ScanGear()
         if mainFrame and mainFrame:IsShown() then BiSTracker_RefreshList() end
@@ -254,7 +287,12 @@ SlashCmdList["BISTRACKER"] = function(msg)
     elseif cmd == "debug" then
         debugMode = not debugMode
         BiSTrackerDB.debugMode = debugMode   -- persist across sessions
-        Print("Debug mode " .. (debugMode and "|cff44ff44ON|r" or "|cffff4444OFF|r"))
+        if debugMode then
+            Print("Debug Mode |cff44ff44On|r")
+            PrintDebugCommands()
+        else
+            Print("Debug mode |cffff4444OFF|r")
+        end
     elseif cmd == "fakelocks" or cmd:match("^fakelocks %d$") then
         local key  = GetCharKey()
         local char = BiSTrackerDB.characters[key]
@@ -296,27 +334,26 @@ SlashCmdList["BISTRACKER"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis|r - Toggle main window")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis scan|r - Rescan equipped gear")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis locks|r - Refresh instance lockouts")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis raidscan|r - Force a full raid rescan (resets the 5-min timer)")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis export|r - Show export string")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis spec|r - Print currently detected spec")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis gs|r - [Debug] Print GearScore breakdown")
+        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis clear|r - Clear all character data (keeps settings + alias)")
+        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis reset|r - Reset all settings to default (incl. account alias)")
+        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis raidscan|r - Force a full raid rescan (resets the 5-min timer)")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis debug|r - Toggle debug messages")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis reset|r - Clear all character data")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis fakelocks|r - [Debug] Lock all instances for current char")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis fakelocks 1-6|r - [Debug] Lock one instance (1=ICC25 2=ICC10 3=RS25 4=RS10 5=TOC25 6=TOC10)")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis weekreset|r - [Debug] Force weekly reset (clears all locks)")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis crs|r - [Debug] Clear saved raid state (snapshot, MS-Changed, whisper flags)")
         DEFAULT_CHAT_FRAME:AddMessage("  |cffaaaaaa/bis help|r - Show this help")
-    elseif cmd == "reset" then
+    elseif cmd == "clear" then
         local angle = BiSTrackerDB.minimapAngle
         local freeX = BiSTrackerDB.minimapFreeX
         local freeY = BiSTrackerDB.minimapFreeY
         local free  = BiSTrackerDB.minimapFree
         local ls    = BiSTrackerDB.lootSettings
         local dbg   = BiSTrackerDB.debugMode
-        BiSTrackerDB = { characters={}, minimapAngle=angle, minimapFreeX=freeX, minimapFreeY=freeY, minimapFree=free, lootSettings=ls, debugMode=dbg }
+        local alias = BiSTrackerDB.accountAlias
+        BiSTrackerDB = { characters={}, minimapAngle=angle, minimapFreeX=freeX, minimapFreeY=freeY, minimapFree=free, lootSettings=ls, debugMode=dbg, accountAlias=alias }
         expandedChars = {}; detailPanels = {}
         Print("Character database cleared.")
+    elseif cmd == "reset" then
+        BiSTracker_ResetSettings()
+        Print("All settings reset to default.")
     else
         if mainFrame and mainFrame:IsShown() then mainFrame:Hide()
         else BiSTracker_ShowMainFrame() end

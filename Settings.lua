@@ -849,6 +849,19 @@ function LootSettings_SyncUI()
     if lsWidgets.updateLayout then lsWidgets.updateLayout() end
 end
 
+-- Wipe all user settings back to their LS() defaults (incl. the account alias) and refresh the
+-- open settings window. Characters/realms are left untouched. Used by /bis reset.
+function BiSTracker_ResetSettings()
+    BiSTrackerDB.lootSettings = nil
+    BiSTrackerDB.accountAlias = nil
+    LS()   -- rebuild lootSettings with defaults
+    -- Section collapse state is mirrored in these file-locals; re-expand to match the defaults.
+    lsGeneralCollapsed  = false
+    lsExportCollapsed   = false
+    lsAnnounceCollapsed = false
+    LootSettings_SyncUI()   -- refresh widgets/alias/layout (no-op if the window isn't built yet)
+end
+
 local function GetOrCreateRaidDetailPanel(playerName)
     if lsRaidDetailPanels[playerName] then return lsRaidDetailPanels[playerName] end
     local mlContent = mainFrame and mainFrame.mlContent

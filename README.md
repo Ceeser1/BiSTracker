@@ -1,6 +1,6 @@
 # BiS Tracker
 
-> **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.7.0 · **Author:** Ceeser · No external addons/libraries needed.
+> **Interface:** 30300 (WotLK 3.3.5a) · **Version:** 1.7.1 · **Author:** Ceeser · No external addons/libraries needed.
 
 ---
 
@@ -154,8 +154,8 @@ A dedicated Settings view with three collapsible sections:
 | `/bis scan` | Rescan equipped gear for the active spec |
 | `/bis locks` | Refresh instance lockout status |
 | `/bis export` | Open the export-string window |
-| `/bis reset` | Clear all character data (keeps settings & minimap position) |
-| `/bis weekreset` | Force a weekly instance lockouts reset|
+| `/bis clear` | Clear all character data (keeps settings, alias & minimap position) |
+| `/bis reset` | Reset all settings to default, including the account alias (keeps characters) |
 | `/bis raidscan` | Force a full re-scan of the whole raid immediatly |
 | `/bis debug` | Toggle debug messages |
 | `/bis help` | List all commands |
