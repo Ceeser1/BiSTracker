@@ -45,6 +45,10 @@ function LS()
     if ls.autoScanLocks   == nil then ls.autoScanLocks   = true       end
     if ls.skipAnnouncer   == nil then ls.skipAnnouncer   = false      end
     if ls.minimapPopup    == nil then ls.minimapPopup    = true       end
+    -- Settings-window section collapse state (persist so it survives relog; default expanded)
+    if ls.genCollapsed    == nil then ls.genCollapsed    = false      end
+    if ls.expCollapsed    == nil then ls.expCollapsed    = false      end
+    if ls.annCollapsed    == nil then ls.annCollapsed    = false      end
     return ls
 end
 
@@ -972,6 +976,12 @@ function BuildLootSettingsUI(c)
     local BODY_H     = 312   -- Announce Settings body height
     local RAID_H     = 44
 
+    -- Restore persisted collapse state for the three settings sections.
+    local ls0 = LS()
+    lsGeneralCollapsed  = ls0.genCollapsed and true or false
+    lsExportCollapsed   = ls0.expCollapsed and true or false
+    lsAnnounceCollapsed = ls0.annCollapsed and true or false
+
     -- Generic builders, bound to an explicit parent frame (two collapsible bodies exist).
     local function MakeSep(parent, y)
         local line = parent:CreateTexture(nil, "ARTWORK")
@@ -1250,16 +1260,19 @@ function BuildLootSettingsUI(c)
     -- Collapse toggles (independent per section)
     genCollapseBtn:SetScript("OnClick", function()
         lsGeneralCollapsed = not lsGeneralCollapsed
+        LS().genCollapsed = lsGeneralCollapsed
         UpdateLayout()
         BiSTracker_RefreshRaidList()
     end)
     expCollapseBtn:SetScript("OnClick", function()
         lsExportCollapsed = not lsExportCollapsed
+        LS().expCollapsed = lsExportCollapsed
         UpdateLayout()
         BiSTracker_RefreshRaidList()
     end)
     annCollapseBtn:SetScript("OnClick", function()
         lsAnnounceCollapsed = not lsAnnounceCollapsed
+        LS().annCollapsed = lsAnnounceCollapsed
         UpdateLayout()
         BiSTracker_RefreshRaidList()
     end)
