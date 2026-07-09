@@ -11,6 +11,7 @@ local lsGeneralCollapsed  = false  -- General Settings section collapse state
 local lsExportCollapsed   = false  -- Export Settings section collapse state
 local lsAnnounceCollapsed = false  -- Announce Settings section collapse state
 local raidScanData       = {}  -- [playerName] = { spec, class, gear={} }
+local raidScanFailed     = {}  -- [playerName]=true: dropped after MAX_REQUEUES; shows "Unable to scan" until next full scan
 
 -- De-dup cache for posted items (avoid reacting twice to the same repost).
 local lastPostedItem = nil
@@ -1202,9 +1203,15 @@ function BiSTracker_RefreshRaidList()
                 end
             end
         else
-            row.specLbl:SetText(LS().scanRaid and "|cff666666Scanning...|r" or "|cff666666Not scanned|r")
-            row.bisLbl:SetText("|cffaaaaaa-|r")
-            row.gsLbl:SetText("|cff666666-|r")
+            if raidScanFailed[m.name] then
+                row.specLbl:SetText("|cffcc6666Unable to scan|r")
+                row.bisLbl:SetText("|cffcc6666-|r")   -- failed: red dash, not the neutral "loading" grey
+                row.gsLbl:SetText("|cffcc6666-|r")
+            else
+                row.specLbl:SetText(LS().scanRaid and "|cff666666Scanning...|r" or "|cff666666Not scanned|r")
+                row.bisLbl:SetText("|cffaaaaaa-|r")
+                row.gsLbl:SetText("|cff666666-|r")
+            end
             row.toggleBtn:Hide()
         end
     end
@@ -1698,10 +1705,22 @@ do
     local onlineStatus       = {}     -- onlineStatus[name] = bool; last-known connection state
     local connTimer          = 0
     local CONN_POLL          = 2.0    -- seconds between connection-status polls
-    local INTERVAL           = 10.0
-    local WAIT               = 1.5
+    local INTERVAL           = 4.5    -- idle gap between inspects (added on top of the inspect wait)
+    local TALENT_TIMEOUT     = 2.5    -- max wait for inspect talent data before giving up on this target
     local REBUILD_INTERVAL   = 300.0  -- 5 minutes between full scans
     local MAX_REQUEUES       = 5      -- out-of-range re-queue cap before dropping (re-added next full scan)
+
+    -- Total talent points across the inspected unit's trees; 0 until the inspect talent data has
+    -- actually arrived. INSPECT_TALENT_READY proved unreliable (it can fire before the data is
+    -- queryable, or for a stale request), so we validate real points instead of trusting an event.
+    local function InspectTalentPoints()
+        local total = 0
+        for tab = 1, GetNumTalentTabs(true) do
+            local _, _, pts = GetTalentTabInfo(tab, true)
+            total = total + (pts or 0)
+        end
+        return total
+    end
 
     local function DetectInspectSpec(classFile)
         if not classFile then return nil end
@@ -1711,6 +1730,13 @@ do
         for tab = 1, GetNumTalentTabs(true) do
             local _, _, pts = GetTalentTabInfo(tab, true)
             if (pts or 0) > maxPoints then maxPoints = pts; maxTab = tab end
+        end
+        if debugMode then
+            if maxPoints == 0 then
+                Print("[SpecDetect] " .. classFile .. ": no talent points read (inspect data not ready)")
+            else
+                Print("[SpecDetect] " .. classFile .. ": top tree |cffffff00" .. (trees[maxTab] or ("tab " .. maxTab)) .. "|r (tab " .. maxTab .. ", " .. maxPoints .. " pts)")
+            end
         end
         if maxPoints == 0 then return nil end
         if classFile == "DEATHKNIGHT" and maxTab == 1 then return ResolveBloodDK(true) end
@@ -1722,6 +1748,7 @@ do
     local function BuildFullQueue()
         fullScanInProgress = true
         raidScanQueue = {}
+        raidScanFailed = {}   -- a full sweep re-attempts everyone: clear stale "Unable to scan" flags
         local playerName = UnitName("player")
         table.insert(raidScanQueue, { unitID="player", name=playerName, isSelf=true })
         for i = 1, GetNumRaidMembers() do
@@ -1813,6 +1840,7 @@ do
 
     -- Appends a single player to the queue and starts the scan immediately if idle.
     local function EnqueuePlayer(name, unitID, isSelf)
+        raidScanFailed[name] = nil   -- retrying this player: clear any "Unable to scan" flag
         local entry = { unitID=unitID, name=name, isSelf=isSelf or false }
         local idle = #raidScanQueue == 0 and currentUnit == nil
         table.insert(raidScanQueue, entry)
@@ -1910,7 +1938,7 @@ do
 
     -- Stop scanning entirely: clear the queue + any in-progress inspection, drop results, hide.
     function raidScanFrame:Stop()
-        raidScanData = {}; raidScanQueue = {}
+        raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
         currentUnit = nil; currentName = nil; currentEntry = nil
         rebuildActive = false; rebuildTimer = 0
         fullScanInProgress = false; onlineStatus = {}
@@ -1934,7 +1962,7 @@ do
         BiSTrackerDB.raidSnapshot  = nil
         BiSTrackerDB.msChanged     = nil
         BiSTrackerDB.whisperOptOut = nil
-        raidScanData = {}; raidScanQueue = {}
+        raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
         for k in pairs(raidMSChanged)  do raidMSChanged[k]  = nil end
         for k in pairs(noWhisperUsers) do noWhisperUsers[k] = nil end
         for k in pairs(whisperOn)      do whisperOn[k]      = nil end
@@ -1958,7 +1986,7 @@ do
     function raidScanFrame:HandleRosterUpdate()
         if not LS().scanRaid then return end
         if GetNumRaidMembers() == 0 then
-            raidScanData = {}; raidScanQueue = {}
+            raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
             currentUnit = nil; currentName = nil; currentEntry = nil
             rebuildActive = false; rebuildTimer = 0
             fullScanInProgress = false; onlineStatus = {}
@@ -1991,6 +2019,7 @@ do
         for name in pairs(raidScanData) do
             if not currentRoster[name] then
                 raidScanData[name] = nil
+                raidScanFailed[name] = nil
                 local cancelled = RemoveFromQueue(name)
                 if cancelled and #raidScanQueue == 0 then
                     rebuildActive = true; rebuildTimer = 0
@@ -2001,7 +2030,7 @@ do
 
         -- Queue players who just joined (online only)
         for name, info in pairs(currentRoster) do
-            if not raidScanData[name] and not IsQueued(name) then
+            if not raidScanData[name] and not raidScanFailed[name] and not IsQueued(name) then
                 if info.online then
                     EnqueuePlayer(name, info.unitID, name == playerName)
                     if debugMode then Print("[RaidScan] " .. name .. " joined, queued for scan.") end
@@ -2030,7 +2059,9 @@ do
         -- Wait for in-progress inspection to finish
         if currentUnit then
             inspectTimer = inspectTimer + elapsed
-            if inspectTimer >= WAIT then
+            local isSelf = currentEntry and currentEntry.isSelf
+            local talentsLoaded = isSelf or InspectTalentPoints() > 0   -- real inspect data has arrived
+            if talentsLoaded or inspectTimer >= TALENT_TIMEOUT then
                 inspectTimer = 0
                 local gear = {}
                 local slotCount = 0
@@ -2055,10 +2086,13 @@ do
                     end
                 end
                 local spec = nil
-                if currentEntry and currentEntry.isSelf then
+                if isSelf then
                     spec = DetectSpec()
-                else
+                elseif talentsLoaded then
+                    -- Talents genuinely arrived (points > 0), so this reads THIS target's real data.
                     spec = DetectInspectSpec(classL)
+                elseif debugMode then
+                    Print("[SpecDetect] " .. (classL or "?") .. ": talents didn't load within " .. TALENT_TIMEOUT .. "s, retrying")
                 end
                 if not spec then
                     local charKey = currentName .. "-" .. GetRealmName()
@@ -2067,14 +2101,17 @@ do
                     end
                 end
 
-                if slotCount == 0 and not (currentEntry and currentEntry.isSelf) then
+                if (slotCount == 0 or not spec) and not (currentEntry and currentEntry.isSelf) then
+                    -- No gear (out of range) or no spec (talents didn't arrive in time): retry rather
+                    -- than store an empty/spec-less entry. Dropped after MAX_REQUEUES; next full sweep retries.
                     if currentEntry then
                         currentEntry.requeues = (currentEntry.requeues or 0) + 1
                         if currentEntry.requeues < MAX_REQUEUES then
-                            if debugMode then Print("[RaidScan] |cffffff00" .. currentName .. "|r out of range, re-queuing (" .. currentEntry.requeues .. "/" .. MAX_REQUEUES .. ").") end
+                            if debugMode then Print("[RaidScan] |cffffff00" .. currentName .. "|r incomplete (slots=" .. slotCount .. " spec=" .. tostring(spec) .. "), re-queuing (" .. currentEntry.requeues .. "/" .. MAX_REQUEUES .. ").") end
                             table.insert(raidScanQueue, currentEntry)
-                        elseif debugMode then
-                            Print("[RaidScan] |cffffff00" .. currentName .. "|r out of range " .. MAX_REQUEUES .. "x, dropping until next full scan.")
+                        else
+                            raidScanFailed[currentName] = true   -- dropped after retries: show "Unable to scan"
+                            if debugMode then Print("[RaidScan] |cffffff00" .. currentName .. "|r still incomplete after " .. MAX_REQUEUES .. "x, dropping until next full scan.") end
                         end
                     end
                 else
@@ -2105,6 +2142,7 @@ do
                         end
                     end
                     raidScanData[currentName] = { spec=spec, class=classL, gear=gear }
+                    raidScanFailed[currentName] = nil   -- scanned OK: clear any prior "Unable to scan"
                     if debugMode then
                         local specStr  = spec and ("|cffaaaaaa" .. spec .. "|r") or ("|cff666666class:" .. (classL or "?") .. "|r")
                         local queueStr = #raidScanQueue > 0 and ("|cffaaaaaa" .. #raidScanQueue .. " left|r") or "|cff44ff44done|r"
@@ -2175,6 +2213,9 @@ do
         currentEntry = entry
         inspectTimer = 0
         if debugMode then Print("[RaidScan] Inspecting |cffffff00" .. currentName .. "|r (" .. entry.unitID .. ")...") end
-        if not entry.isSelf then NotifyInspect(entry.unitID) end
+        if not entry.isSelf then
+            ClearInspectPlayer()              -- zero the previous target's talents so points>0 means fresh data
+            NotifyInspect(entry.unitID)
+        end
     end)
 end
