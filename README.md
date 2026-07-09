@@ -30,9 +30,9 @@ Every character you log into is remembered automatically: name, class, realm, an
 ### Shows your BiS progress
 Your equipped gear is compared slot-by-slot against a built-in **Best-in-Slot list for 28 PvE specs**:
 
-- 🟢 **Green** You have the exact BiS item.
-- 🟠 **Orange** Right item, but a lower version (e.g. normal instead of heroic).
-- 🔴 **Red** The slot is missing its BiS/Alt item.
+- 🟢 **Green**: You have the exact BiS item.
+- 🟠 **Orange**: Right item, but a lower version (e.g. normal instead of heroic).
+- 🔴 **Red**: The slot is missing its BiS/Alt item.
 
 Each character also gets a BiS score like `12 / 17` so you can see progress at a glance. Many slots list a strong **Alt** (second choice) too.
 
@@ -46,7 +46,8 @@ A built-in, read-only list of the full BiS and Alt gear for **all 28 specs**, so
 Optionally scan your whole raid to see each member's spec, GearScore, and how their gear matches their own BiS list. Great for raid leaders checking the group and required for loot upgrade comparison by the addon.
 
 ### Loot announcer *(for raid leaders)*
-When a raid leader, master looter or assistant links an item in raid chat, the addon can automatically post **who the item is Best-in-Slot (or a good Alt) for**. If several people in the raid run the addon, only **one** announces, so chat never gets spammed.
+When a raid leader, master looter or assistant links an item in raid chat, the addon can automatically post **who the item is Best-in-Slot (or a good Alt) for**.
+If several people in the raid use the addon, only one is elected as the Announcer by the addon (Raid Lead > Master Looter > Assist), so chat never gets spammed.
 
 ### Upgrade notifications
 Get told when a linked item is an upgrade the way you prefer:
@@ -107,7 +108,7 @@ No. The addon only **reads** your gear and lockouts. Any deletion is addon- or s
 No. Only **you** need it. You'll even get upgrade notifications without it, as long as the lead / master looter / assist has the addon set up.
 
 **How does the announcer work?**
-If a player with the addon is Raid Lead or Assist, one of them is chosen as the announcer (Lead > Master Looter > Assist). Having a single announcer prevents the addon from spamming if several people in the raid use it. Only the announcer's settings apply for the raid.
+If multiple players with the addon is Raid Lead or has Assist, only one of them is chosen as the announcer (Lead > Master Looter > Assist). Having a single announcer prevents the addon from spamming if several people in the raid use it. Only the elected announcer's settings apply.
 
 **Why set an Account Alias instead of my real account name?**
 When you share your spreadsheet, anyone with the link can see your account name. Use an alias you'll remember instead of your real acc name. It's recommended for the spreadsheet, and required if you track multiple accounts in one sheet.
