@@ -4,6 +4,5 @@
 # Files tracked in the repo but excluded from release archives
 # (git archive / GitHub "Download ZIP" + Source code assets).
 "BisTracker Sheet Script.gs" export-ignore
-.gitignore     export-ignore
 .gitattributes export-ignore
 LICENSE        export-ignore
