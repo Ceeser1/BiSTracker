@@ -64,27 +64,6 @@ function LS()
     return ls
 end
 
-local function GetMLName()
-    local method, partyIdx, raidIdx = GetLootMethod()
-    if method ~= "master" then return nil end
-    if partyIdx == 0 then return UnitName("player") end
-    if raidIdx then return (GetRaidRosterInfo(raidIdx)) end
-    return nil
-end
-
--- True if the poster is Raid Lead / Assist (rank >= 1) or the Master Looter.
-local function PosterIsOfficer(senderName)
-    for i = 1, GetNumRaidMembers() do
-        local n, r = GetRaidRosterInfo(i)
-        if n == senderName then
-            if r >= 1 then return true end
-            break
-        end
-    end
-    local ml = GetMLName()
-    return ml ~= nil and senderName == ml
-end
-
 -- ============================================================
 -- ANNOUNCER ELECTION + ADDON PRESENCE
 -- ============================================================
@@ -110,30 +89,6 @@ local function SendAddon(msg, target)
     outFrame:Show()
 end
 
--- Split a name list into addon-message bodies of the form "<prefix>Name1;Name2;i/n", each within the
--- 255-byte cap (240 with margin). Always returns >=1 body ("<prefix>1/1" for an empty list).
-local function ChunkNames(prefix, names)
-    local budget = 240 - #prefix - 8   -- 8 = room for the trailing ";i/n" marker
-    local chunks, cur = {}, ""
-    for _, name in ipairs(names) do
-        local piece = (cur == "") and name or (";" .. name)
-        if cur ~= "" and #cur + #piece > budget then
-            chunks[#chunks + 1] = cur
-            cur = name
-        else
-            cur = cur .. piece
-        end
-    end
-    chunks[#chunks + 1] = cur
-    local total, bodies = #chunks, {}
-    for i = 1, total do
-        local marker  = i .. "/" .. total
-        local payload = chunks[i]
-        bodies[i] = (payload == "") and (prefix .. marker) or (prefix .. payload .. ";" .. marker)
-    end
-    return bodies
-end
-
 -- ============================================================
 -- VERSION CHECK  (rides on the HELLO/SKIP presence heartbeat)
 -- ============================================================
@@ -145,29 +100,6 @@ local VER_COLLECT_DELAY = 3.0
 local versionNotified   = false   -- have we already told the user this session? (spam guard)
 local highestPeerVer    = nil     -- highest peer version string seen so far
 local highestPeerName   = nil     -- name of the peer who reported highestPeerVer
-
--- Parse "1.7.10" -> {1,7,10}; ignores any non-numeric junk.
-local function ParseVersion(s)
-    local t = {}
-    for n in tostring(s):gmatch("%d+") do t[#t + 1] = tonumber(n) end
-    return t
-end
-
--- True if version string `a` is strictly older than `b` (numeric, component-wise; 1.7.9 < 1.7.10).
-local function VersionLess(a, b)
-    local A, B = ParseVersion(a), ParseVersion(b)
-    local n = math.max(#A, #B)
-    for i = 1, n do
-        local x, y = A[i] or 0, B[i] or 0
-        if x ~= y then return x < y end
-    end
-    return false
-end
-
--- Accept only plain dotted-numeric versions (reject letters / overlong junk from a bad actor).
-local function IsValidVersion(s)
-    return type(s) == "string" and #s > 0 and #s <= 16 and s:match("^%d+[%d%.]*$") ~= nil
-end
 
 -- Collection window: fires VER_COLLECT_DELAY after the first peer version is seen, then decides once.
 local verFrame = CreateFrame("Frame")
@@ -204,16 +136,6 @@ end
 -- Our own presence body, version-tagged: "HELLO:<ver>" (candidate) or "SKIP:<ver>" (opted out).
 local function PresenceMsg()
     return (LS().skipAnnouncer and "SKIP:" or "HELLO:") .. ADDON_VERSION
-end
-
--- Split a presence message into (kind, version). Accepts the versioned form (HELLO:1.7.2) and the
--- bare legacy form (HELLO) sent by pre-1.7.2 clients, which have no version to report.
-local function ParsePresence(msg)
-    if msg == "HELLO" then return "HELLO", nil end
-    if msg == "SKIP"  then return "SKIP",  nil end
-    if msg:sub(1, 6) == "HELLO:" then return "HELLO", msg:sub(7) end
-    if msg:sub(1, 5) == "SKIP:"  then return "SKIP",  msg:sub(6) end
-    return nil, nil
 end
 
 -- Broadcast our own whisper decision to the raid (NW:1 = opted out / not allowed, NW:0 = allowed).
@@ -302,22 +224,6 @@ end
 local function SkipsAnnouncer(name)
     if name == UnitName("player") then return LS().skipAnnouncer and true or false end
     return skipUsers[name] == true
-end
-
-local function RankOf(name)
-    for i = 1, GetNumRaidMembers() do
-        local n, rank = GetRaidRosterInfo(i)
-        if n == name then return rank end
-    end
-    return nil
-end
-
-local function IsOnline(name)
-    for i = 1, GetNumRaidMembers() do
-        local n, _, _, _, _, _, _, online = GetRaidRosterInfo(i)
-        if n == name then return online and true or false end
-    end
-    return false
 end
 
 -- Pick the announcer by hierarchy among online addon users.
@@ -737,13 +643,6 @@ local function LookupItemInBiS(itemName)
         end
     end
     return results
-end
-
-local function SendInChannel(msg, channel)
-    if     channel == "say"         then SendChatMessage(msg, "SAY")
-    elseif channel == "raidChat"    then SendChatMessage(msg, "RAID")
-    elseif channel == "raidWarning" then SendChatMessage(msg, "RAID_WARNING")
-    end
 end
 
 -- Personal upgrade label for a posted item vs my gear: "BiS"|"Alt BiS"|"pre-BiS"|
