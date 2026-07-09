@@ -13,7 +13,7 @@ A World of Warcraft **Wrath of the Lich King (3.3.5a)** addon that tracks every 
 ## How to Install
 
 The Addon:
-1. Download the [latest version](https://github.com/Ceeser1/BiSTracker/releases/tag/v1.7) and extract the folder inside into your addons folder, like this: `World of Warcraft\Interface\AddOns\BiSTracker`
+1. Download the [latest version](https://github.com/Ceeser1/BiSTracker/releases/latest) and extract the folder inside into your addons folder, like this: `World of Warcraft\Interface\AddOns\BiSTracker`
 2. Restart the game. Enable **BiS Tracker** in the character-select screen under AddOns if needed.
 3. Click the minimap icon (default top-right on the map) or type `/bis` to open it.
 
