@@ -52,7 +52,6 @@ const LOG_COL_TIME = 24;  // X — timestamp
 const UPDATE_TZ  = "GMT";
 const UPDATE_24H = true;
 
-const ADDON_DOWNLOAD_URL = "https://www.google.com"; // placeholder
 const UWU_SERVER  = "Icecrown";                       // realm fallback for older exports
 const EXPORT_SECRET = "BiSTrk!2026#warmane";          // MUST match the addon's Constants.lua
 
@@ -155,23 +154,10 @@ function onOpen() {
     .addSeparator()
     .addItem("Delete All Characters",         "deleteAllCharacters")
     .addToUi();
-  ui.createMenu("Get The Addon").addItem("Open download page", "getTheAddon").addToUi();
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   initSheet(ss.getSheetByName(SHEET_CHARS), true);  // reset expired locks + collapse
   initSheet(ss.getSheetByName(SHEET_BIS),   false); // collapse only
-}
-
-// Open the addon download page in a new tab (Apps Script can't navigate directly).
-function getTheAddon() {
-  const url = JSON.stringify(ADDON_DOWNLOAD_URL);
-  const html = HtmlService.createHtmlOutput(
-    '<div style="font-family:Arial,sans-serif;font-size:14px;padding:6px;">' +
-      'Opening the addon page in a new tab…<br><br>' +
-      'If nothing happens, <a href=' + url + ' target="_blank" rel="noopener">click here</a>.' +
-    '</div><script>window.open(' + url + ',"_blank");</script>'
-  ).setWidth(330).setHeight(110);
-  SpreadsheetApp.getUi().showModalDialog(html, "Get The Addon");
 }
 
 // Collapse every block; on full init also reset expired instance locks.
