@@ -963,12 +963,14 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
         return (st and RANGED_LABEL[st:lower()]) or "Ranged"
     end
 
-    -- Write one equipped item line; skips if slot is empty
+    -- Write one gear line. Empty slots still show as white "Empty"; the sole exception is Off Hand,
+    -- which is hidden when empty (2H weapons / no shield are normal, not a missing item).
     local COL_W = { DETAIL_COL_X[2] - DETAIL_COL_X[1] - 8, 626 - DETAIL_COL_X[2] - 8 }
     local function WriteItem(c, lineIdx, yOff, gearSlot, label)
-        local item = gear[gearSlot]
-        if not item or not item.name then return lineIdx, yOff end
-        if gearSlot == "Ranged" then label = RangedLabel(item) end
+        local item  = gear[gearSlot]
+        local empty = not item or not item.name
+        if empty and gearSlot == "Off Hand" then return lineIdx, yOff end
+        if not empty and gearSlot == "Ranged" then label = RangedLabel(item) end
         lineIdx = lineIdx + 1
         if lineIdx > DETAIL_MAX_LINES[c] then return lineIdx, yOff end
         local row = panel.lines[c][lineIdx]
@@ -976,10 +978,14 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
         row.name:ClearAllPoints()
         row.name:SetPoint("TOPLEFT", panel, "TOPLEFT", DETAIL_COL_X[c], yOff)
         row.name:SetWidth(COL_W[c])
-        local col    = SlotColor(gearSlot)
-        local ilvlStr = (item.ilvl and item.ilvl > 0) and " (" .. item.ilvl .. ")" or ""
-        local prefix  = (item.alt and not item.bis) and (COLOR.blue .. "(Alt)|r ") or ""
-        row.name:SetText("|cffaaaaaa[" .. label .. "]|r " .. prefix .. col .. item.name .. ilvlStr .. "|r")
+        if empty then
+            row.name:SetText("|cffaaaaaa[" .. label .. "]|r " .. COLOR.white .. "Empty|r")
+        else
+            local col     = SlotColor(gearSlot)
+            local ilvlStr = (item.ilvl and item.ilvl > 0) and " (" .. item.ilvl .. ")" or ""
+            local prefix  = (item.alt and not item.bis) and (COLOR.blue .. "(Alt)|r ") or ""
+            row.name:SetText("|cffaaaaaa[" .. label .. "]|r " .. prefix .. col .. item.name .. ilvlStr .. "|r")
+        end
         row.name:Show()
         yOff = yOff - DETAIL_LINE_H
         return lineIdx, yOff
