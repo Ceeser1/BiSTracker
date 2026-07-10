@@ -1710,9 +1710,32 @@ do
     local REBUILD_INTERVAL   = 300.0  -- 5 minutes between full scans
     local MAX_REQUEUES       = 5      -- out-of-range re-queue cap before dropping (re-added next full scan)
 
-    -- Total talent points across the inspected unit's trees; 0 until the inspect talent data has
-    -- actually arrived. INSPECT_TALENT_READY proved unreliable (it can fire before the data is
-    -- queryable, or for a stale request), so we validate real points instead of trusting an event.
+    -- Inspect-buffer ownership tracking. The 3.3.5 client keeps ONE global inspect buffer:
+    -- GetTalentTabInfo(tab, true) has no unit argument and returns whatever the last answered
+    -- NotifyInspect (ours, another addon's like GearScore, or the Blizzard inspect UI) put
+    -- there. Before reading talents we must prove the buffer belongs to OUR target, otherwise
+    -- a stale/foreign buffer gets attributed to the wrong player (e.g. Combat rogue stored as
+    -- Subtlety because the previous target's tab-3-heavy talents were still readable).
+    --   currentGUID      = who WE asked about (set when we send NotifyInspect)
+    --   lastNotifyGUID   = who the most recent NotifyInspect from ANY source asked about
+    --   talentsReadyGUID = whose data provably sits in the buffer (INSPECT_TALENT_READY arrived)
+    local currentGUID      = nil
+    local lastNotifyGUID   = nil
+    local talentsReadyGUID = nil
+
+    hooksecurefunc("NotifyInspect", function(unit)
+        lastNotifyGUID   = UnitGUID(unit)
+        talentsReadyGUID = nil   -- new request in flight: buffer ownership unknown until READY fires
+    end)
+
+    raidScanFrame:RegisterEvent("INSPECT_TALENT_READY")
+    raidScanFrame:SetScript("OnEvent", function()
+        talentsReadyGUID = lastNotifyGUID   -- the buffer now holds the last requested player's talents
+    end)
+
+    -- Total talent points readable from the inspect buffer; 0 until real data arrived. Sanity
+    -- check on top of the GUID ownership above (INSPECT_TALENT_READY can fire a moment before
+    -- the data is actually queryable).
     local function InspectTalentPoints()
         local total = 0
         for tab = 1, GetNumTalentTabs(true) do
@@ -1831,7 +1854,7 @@ do
         end
         raidScanQueue = newQueue
         if currentName == name then
-            currentUnit = nil; currentName = nil; currentEntry = nil
+            currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
             mainTimer = 0
             return true
         end
@@ -1930,7 +1953,7 @@ do
         end
         LoadSnapshotOnce()   -- login/reload kickoff: seed the panel before the full rescan
         rebuildActive = false; rebuildTimer = 0
-        currentUnit = nil; currentName = nil; currentEntry = nil
+        currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
         local total = BuildFullQueue()
         mainTimer = INTERVAL
         if debugMode then Print("[RaidScan] Queue rebuilt: |cffffff00" .. total .. "|r member(s).") end
@@ -1939,7 +1962,7 @@ do
     -- Stop scanning entirely: clear the queue + any in-progress inspection, drop results, hide.
     function raidScanFrame:Stop()
         raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
-        currentUnit = nil; currentName = nil; currentEntry = nil
+        currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
         rebuildActive = false; rebuildTimer = 0
         fullScanInProgress = false; onlineStatus = {}
         snapshotLoadAttempted = false
@@ -1966,7 +1989,7 @@ do
         for k in pairs(raidMSChanged)  do raidMSChanged[k]  = nil end
         for k in pairs(noWhisperUsers) do noWhisperUsers[k] = nil end
         for k in pairs(whisperOn)      do whisperOn[k]      = nil end
-        currentUnit = nil; currentName = nil; currentEntry = nil
+        currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
         rebuildActive = false; rebuildTimer = 0
         fullScanInProgress = false; onlineStatus = {}
         snapshotLoadAttempted = true   -- snapshot is gone; don't try to restore one
@@ -1987,7 +2010,7 @@ do
         if not LS().scanRaid then return end
         if GetNumRaidMembers() == 0 then
             raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
-            currentUnit = nil; currentName = nil; currentEntry = nil
+            currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
             rebuildActive = false; rebuildTimer = 0
             fullScanInProgress = false; onlineStatus = {}
             snapshotLoadAttempted = false   -- re-arm snapshot load for the next raid we join
@@ -2060,9 +2083,19 @@ do
         if currentUnit then
             inspectTimer = inspectTimer + elapsed
             local isSelf = currentEntry and currentEntry.isSelf
-            local talentsLoaded = isSelf or InspectTalentPoints() > 0   -- real inspect data has arrived
+            -- Talents count as loaded only when the buffer provably belongs to OUR target:
+            -- READY fired for their GUID (no other addon's request overwrote it) and real
+            -- points are readable. points>0 alone could be a stale/foreign buffer.
+            local talentsLoaded = isSelf or (currentGUID ~= nil and talentsReadyGUID == currentGUID and InspectTalentPoints() > 0)
             if talentsLoaded or inspectTimer >= TALENT_TIMEOUT then
                 inspectTimer = 0
+                -- Re-resolve the unit by name before reading gear: positional raidN IDs can
+                -- remap if the roster shifted during the inspect wait.
+                if not isSelf then
+                    for i = 1, GetNumRaidMembers() do
+                        if GetRaidRosterInfo(i) == currentName then currentUnit = "raid"..i; break end
+                    end
+                end
                 local gear = {}
                 local slotCount = 0
                 for _, slot in ipairs(GEAR_SLOTS) do
@@ -2089,10 +2122,11 @@ do
                 if isSelf then
                     spec = DetectSpec()
                 elseif talentsLoaded then
-                    -- Talents genuinely arrived (points > 0), so this reads THIS target's real data.
+                    -- Buffer ownership verified (READY for their GUID + points>0): this reads
+                    -- THIS target's real data, not a stale/foreign buffer.
                     spec = DetectInspectSpec(classL)
                 elseif debugMode then
-                    Print("[SpecDetect] " .. (classL or "?") .. ": talents didn't load within " .. TALENT_TIMEOUT .. "s, retrying")
+                    Print("[SpecDetect] " .. (classL or "?") .. ": no owned talent data within " .. TALENT_TIMEOUT .. "s, retrying")
                 end
                 if not spec then
                     local charKey = currentName .. "-" .. GetRealmName()
@@ -2150,7 +2184,7 @@ do
                     end
                 end
 
-                currentUnit = nil; currentName = nil; currentEntry = nil
+                currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
                 mainTimer = 0
 
                 if #raidScanQueue == 0 then
@@ -2190,15 +2224,16 @@ do
 
         local entry = table.remove(raidScanQueue, 1)
 
-        -- Skip offline players (they may have disconnected after being queued)
         if not entry.isSelf then
-            local online = false
+            -- Re-resolve the unit by name: positional raidN IDs shift on every roster change,
+            -- and this entry may have been queued minutes ago. Also picks up online state.
+            local online, unitID = false, nil
             for i = 1, GetNumRaidMembers() do
                 local n, _, _, _, _, _, _, onl = GetRaidRosterInfo(i)
-                if n == entry.name then online = onl; break end
+                if n == entry.name then online = onl; unitID = "raid"..i; break end
             end
-            if not online then
-                if debugMode then Print("[RaidScan] Skipping |cffffff00" .. entry.name .. "|r (offline).") end
+            if not unitID or not online then
+                if debugMode then Print("[RaidScan] Skipping |cffffff00" .. entry.name .. "|r (" .. (unitID and "offline" or "left raid") .. ").") end
                 if #raidScanQueue == 0 then
                     OnQueueDrained()      -- last entry was a skip: finish the queue properly
                 else
@@ -2206,15 +2241,36 @@ do
                 end
                 return
             end
+            entry.unitID = unitID
+
+            -- Range gate: the server only answers NotifyInspect within ~28 yd. Requeue now
+            -- instead of burning the TALENT_TIMEOUT wait on a target that can never answer.
+            if not (CanInspect(unitID) and CheckInteractDistance(unitID, 1)) then
+                entry.requeues = (entry.requeues or 0) + 1
+                if entry.requeues < MAX_REQUEUES then
+                    if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r not inspectable (out of range?), re-queuing (" .. entry.requeues .. "/" .. MAX_REQUEUES .. ").") end
+                    table.insert(raidScanQueue, entry)
+                else
+                    raidScanFailed[entry.name] = true   -- dropped after retries: show "Unable to scan"
+                    if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r not inspectable after " .. MAX_REQUEUES .. "x, dropping until next full scan.") end
+                    if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+                        BiSTracker_RefreshRaidList()
+                    end
+                end
+                if #raidScanQueue == 0 then OnQueueDrained() end
+                return
+            end
         end
 
         currentUnit  = entry.unitID
         currentName  = entry.name
         currentEntry = entry
+        currentGUID  = nil
+        if not entry.isSelf then currentGUID = UnitGUID(entry.unitID) end   -- whose talents we're asking for
         inspectTimer = 0
         if debugMode then Print("[RaidScan] Inspecting |cffffff00" .. currentName .. "|r (" .. entry.unitID .. ")...") end
         if not entry.isSelf then
-            ClearInspectPlayer()              -- zero the previous target's talents so points>0 means fresh data
+            ClearInspectPlayer()   -- hygiene: drop the previous buffer (ownership is enforced via GUID anyway)
             NotifyInspect(entry.unitID)
         end
     end)
