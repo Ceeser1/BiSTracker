@@ -20,10 +20,12 @@ function CreateMinimapButton()
     borderTex:SetWidth(56); borderTex:SetHeight(56)
     borderTex:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
 
-    local function UpdatePos(angle)
-        BiSTrackerDB.minimapAngle = angle
-        BiSTrackerDB.minimapFree  = nil
-        btn:SetParent(Minimap)
+    -- Anchor the button to the minimap edge at `angle` degrees. Deliberately does NOT
+    -- re-parent: SetParent while a mouse button is held down drops the frame's click
+    -- capture, so OnMouseUp never fires and the button keeps chasing the cursor after
+    -- release (happened when shift-dragging a previously ctrl-placed, UIParent-owned
+    -- button). Re-parenting waits for OnMouseUp.
+    local function PlaceAtAngle(angle)
         btn:ClearAllPoints()
         local edge = Minimap:GetWidth() / 2 + 5
         local rad  = math.rad(angle)
@@ -40,6 +42,13 @@ function CreateMinimapButton()
             y = s * edge
         end
         btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
+    end
+
+    local function UpdatePos(angle)
+        BiSTrackerDB.minimapAngle = angle
+        BiSTrackerDB.minimapFree  = nil
+        btn:SetParent(Minimap)
+        PlaceAtAngle(angle)
     end
 
     -- Restore saved position; re-run on PLAYER_ENTERING_WORLD (minimap width/shape are
@@ -64,17 +73,18 @@ function CreateMinimapButton()
         else BiSTracker_ShowMainFrame() end
     end)
 
-    local dragMode = nil
+    local dragMode  = nil
+    local dragAngle = nil
     btn:SetScript("OnMouseDown", function(self, button)
         if button ~= "LeftButton" then return end
         if IsShiftKeyDown() then
             dragMode = "shift"
-            btn:SetParent(Minimap)
             self:SetScript("OnUpdate", function()
                 local mx, my = Minimap:GetCenter()
-                local scale  = btn:GetEffectiveScale()
+                local scale  = Minimap:GetEffectiveScale()
                 local cx, cy = GetCursorPosition()
-                UpdatePos(math.deg(math.atan2((cy / scale) - my, (cx / scale) - mx)))
+                dragAngle = math.deg(math.atan2((cy / scale) - my, (cx / scale) - mx))
+                PlaceAtAngle(dragAngle)   -- follow the edge; re-parent + save on OnMouseUp
             end)
         elseif IsControlKeyDown() then
             dragMode = "ctrl"
@@ -91,7 +101,10 @@ function CreateMinimapButton()
     btn:SetScript("OnMouseUp", function(self, button)
         if button ~= "LeftButton" then return end
         self:SetScript("OnUpdate", nil)
-        if dragMode == "ctrl" then
+        if dragMode == "shift" then
+            -- Click released: now re-parenting is safe. Persist the edge position.
+            UpdatePos(dragAngle or BiSTrackerDB.minimapAngle or 45)
+        elseif dragMode == "ctrl" then
             local scale = UIParent:GetEffectiveScale()
             local cx, cy = GetCursorPosition()
             local x, y = cx / scale, cy / scale
@@ -102,7 +115,7 @@ function CreateMinimapButton()
             BiSTrackerDB.minimapFreeY = y
             BiSTrackerDB.minimapFree  = true
         end
-        dragMode = nil
+        dragMode = nil; dragAngle = nil
     end)
 
     -- Custom table tooltip frame (created once, refreshed on hover)
