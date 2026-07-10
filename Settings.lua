@@ -797,6 +797,7 @@ function HandlePostedItem(sender, message)
 
     -- Inform players: same BiS/Alt/pre-BiS/Alt pre-BiS logic as "always notify me".
     if not ls.informPlayers then return end
+    local informed = {}   -- { {name, label}, ... }: say/raid recipients, combined into one line below
     for playerName, scanEntry in pairs(raidScanData) do
         local spec = scanEntry.spec
         -- Skip players flagged "MS Changed" (scanned gear no longer matches spec BiS), players who
@@ -805,14 +806,36 @@ function HandlePostedItem(sender, message)
            and not noWhisperUsers[playerName] and whisperOn[playerName] ~= false then
             local label = GetNotifyUpgradeType(bisResults[spec], scanEntry.gear, itemName, postedIlvl)
             if label then
-                local msg = itemLink .. " is " .. UpgradePhrase(label) .. " for you."
                 if ls.informChannel == "whisper" then
-                    SendChatMessage(msg, "WHISPER", nil, playerName)
+                    SendChatMessage(itemLink .. " is " .. UpgradePhrase(label) .. " for you.", "WHISPER", nil, playerName)
                 else
-                    SendInChannel(playerName .. " " .. msg, ls.informChannel)
+                    table.insert(informed, { name = playerName, label = label })
                 end
             end
         end
+    end
+    -- Say/raid: one combined line "[Item] is an upgrade for A (BiS), B (Alt), C (pre-BiS), ..."
+    -- instead of a chat message per player. Splits only if the 255-char chat cap is exceeded.
+    if #informed > 0 then
+        local rank = { ["BiS"] = 1, ["Alt BiS"] = 2, ["pre-BiS"] = 3, ["Alt pre-BiS"] = 4 }
+        table.sort(informed, function(a, b)
+            if rank[a.label] ~= rank[b.label] then return rank[a.label] < rank[b.label] end
+            return a.name < b.name
+        end)
+        local prefix = itemLink .. " is an upgrade for "
+        local line
+        for _, p in ipairs(informed) do
+            local piece = p.name .. " (" .. p.label .. ")"
+            if not line then
+                line = prefix .. piece
+            elseif #line + 2 + #piece > 255 then
+                SendInChannel(line, ls.informChannel)
+                line = prefix .. piece
+            else
+                line = line .. ", " .. piece
+            end
+        end
+        SendInChannel(line, ls.informChannel)
     end
 end
 
