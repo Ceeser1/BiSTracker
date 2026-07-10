@@ -14,3 +14,4 @@ Main.lua
 Edit.lua
 Export.lua
 Settings.lua
+RaidScan.lua

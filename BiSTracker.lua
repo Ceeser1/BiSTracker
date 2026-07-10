@@ -11,8 +11,7 @@ local ADDON_VERSION = GetAddOnMetadata(ADDON_NAME, "Version") or "?"   -- pulled
 BiSTrackerDB = BiSTrackerDB or { characters = {} }
 
 mainFrame      = nil
-raidScanFrame  = nil   -- assigned in GUI/Settings.lua
-raidScanQueue  = {}
+raidScanFrame  = nil   -- assigned in RaidScan.lua
 detailPanels   = {}
 expandedChars  = {}
 viewMode       = "main"
