@@ -1179,8 +1179,8 @@ function BiSTracker_RefreshRaidList()
         row.msCheck:Show()
 
         local scanEntry = raidScanData[m.name]
-        if scanEntry then
-            row.specLbl:SetText("|cffaaaaaa" .. (scanEntry.spec or scanEntry.class or "?") .. "|r")
+        if scanEntry and scanEntry.spec then
+            row.specLbl:SetText("|cffaaaaaa" .. scanEntry.spec .. "|r")
             local spec     = scanEntry.spec
             local specData = spec and ClassesBiS and ClassesBiS[spec]
             if specData then
@@ -1226,7 +1226,10 @@ function BiSTracker_RefreshRaidList()
                 end
             end
         else
-            if raidScanFailed[m.name] then
+            if scanEntry or raidScanFailed[m.name] then
+                -- A genuine failure, OR a stored entry whose spec never resolved (e.g. an old snapshot
+                -- from before the spec-detection fix). A class name isn't a spec, so show "Unable to
+                -- scan" rather than falling back to the bare class.
                 row.specLbl:SetText("|cffcc6666Unable to scan|r")
                 row.bisLbl:SetText("|cffcc6666-|r")   -- failed: red dash, not the neutral "loading" grey
                 row.gsLbl:SetText("|cffcc6666-|r")
