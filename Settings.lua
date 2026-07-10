@@ -11,7 +11,11 @@ local lsGeneralCollapsed  = false  -- General Settings section collapse state
 local lsExportCollapsed   = false  -- Export Settings section collapse state
 local lsAnnounceCollapsed = false  -- Announce Settings section collapse state
 local raidScanData       = {}  -- [playerName] = { spec, class, gear={} }
-local raidScanFailed     = {}  -- [playerName]=true: dropped after MAX_REQUEUES; shows "Unable to scan" until next full scan
+local raidScanOOR        = {}  -- [playerName] = queue entry: parked ONLY for being out of inspect range.
+                               -- Re-checked as a whole every OOR_POLL and pushed back to the queue front
+                               -- once in range. Shows "Out of range, retrying...".
+local raidScanFailed     = {}  -- [playerName]=true: an inspect returned no gear/talents MAX_REQUEUES times
+                               -- in a row, so it was dropped. Shows "Unable to scan" until the next full scan.
 
 -- De-dup cache for posted items (avoid reacting twice to the same repost).
 local lastPostedItem = nil
@@ -1233,6 +1237,10 @@ function BiSTracker_RefreshRaidList()
                 row.specLbl:SetText("|cffcc6666Unable to scan|r")
                 row.bisLbl:SetText("|cffcc6666-|r")   -- failed: red dash, not the neutral "loading" grey
                 row.gsLbl:SetText("|cffcc6666-|r")
+            elseif raidScanOOR[m.name] then
+                row.specLbl:SetText("|cffcc9944Out of range, retrying...|r")
+                row.bisLbl:SetText("|cffaaaaaa-|r")
+                row.gsLbl:SetText("|cff666666-|r")
             else
                 row.specLbl:SetText(LS().scanRaid and "|cff666666Scanning...|r" or "|cff666666Not scanned|r")
                 row.bisLbl:SetText("|cffaaaaaa-|r")
@@ -1731,11 +1739,17 @@ do
     local onlineStatus       = {}     -- onlineStatus[name] = bool; last-known connection state
     local connTimer          = 0
     local CONN_POLL          = 2.0    -- seconds between connection-status polls
+    -- raidScanOOR (file-scope, so the raid-list render can read it) parks ONLY out-of-range players.
+    -- ALL of it is swept every OOR_POLL; entries back in range jump to the queue front. It keeps
+    -- retrying indefinitely (out of range isn't a failure); only a full queue rebuild clears it.
+    local oorTimer           = 0
+    local OOR_POLL           = 10.0   -- seconds between out-of-range sweeps (whole table at once)
     local INTERVAL           = 1.5    -- idle gap between inspects; also the safety margin against
                                       -- ultra-late replies being misattributed (see GUID tracking below)
     local TALENT_TIMEOUT     = 2.5    -- max wait for inspect talent data before giving up on this target
     local REBUILD_INTERVAL   = 300.0  -- 5 minutes between full scans
-    local MAX_REQUEUES       = 5      -- out-of-range re-queue cap before dropping (re-added next full scan)
+    local MAX_REQUEUES       = 5      -- incomplete-inspect (no gear/talents) re-queue cap before dropping
+                                      -- to "Unable to scan"; re-attempted on the next full scan
 
     -- Inspect-buffer ownership tracking. The 3.3.5 client keeps ONE global inspect buffer:
     -- GetTalentTabInfo(tab, true) has no unit argument and returns whatever the last answered
@@ -1799,6 +1813,8 @@ do
         fullScanInProgress = true
         raidScanQueue = {}
         raidScanFailed = {}   -- a full sweep re-attempts everyone: clear stale "Unable to scan" flags
+        raidScanOOR = {}      -- and drop all out-of-range parking
+        oorTimer = 0
         local playerName = UnitName("player")
         table.insert(raidScanQueue, { unitID="player", name=playerName, isSelf=true })
         for i = 1, GetNumRaidMembers() do
@@ -1863,9 +1879,10 @@ do
         return loaded
     end
 
-    -- Returns true when a player is already being inspected or is in the queue.
+    -- Returns true when a player is already being inspected, queued, or parked out of range.
     local function IsQueued(name)
         if currentName == name then return true end
+        if raidScanOOR[name] then return true end
         for _, e in ipairs(raidScanQueue) do
             if e.name == name then return true end
         end
@@ -1873,6 +1890,8 @@ do
     end
 
     -- Remove a player from the queue / cancel their in-progress inspection; true if either happened.
+    -- Also unparks them from the out-of-range table (side effect only: parked players don't count as
+    -- "removed" for the caller's queue-drained check).
     local function RemoveFromQueue(name)
         local newQueue = {}
         local removed = false
@@ -1880,6 +1899,7 @@ do
             if e.name ~= name then table.insert(newQueue, e) else removed = true end
         end
         raidScanQueue = newQueue
+        raidScanOOR[name] = nil
         if currentName == name then
             currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
             mainTimer = 0
@@ -1891,6 +1911,7 @@ do
     -- Appends a single player to the queue and starts the scan immediately if idle.
     local function EnqueuePlayer(name, unitID, isSelf)
         raidScanFailed[name] = nil   -- retrying this player: clear any "Unable to scan" flag
+        raidScanOOR[name]    = nil   -- and any out-of-range parking
         local entry = { unitID=unitID, name=name, isSelf=isSelf or false }
         local idle = #raidScanQueue == 0 and currentUnit == nil
         table.insert(raidScanQueue, entry)
@@ -1988,12 +2009,12 @@ do
 
     -- Stop scanning entirely: clear the queue + any in-progress inspection, drop results, hide.
     function raidScanFrame:Stop()
-        raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
+        raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}; raidScanOOR = {}
         currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
         rebuildActive = false; rebuildTimer = 0
         fullScanInProgress = false; onlineStatus = {}
         snapshotLoadAttempted = false
-        mainTimer = 0; inspectTimer = 0; connTimer = 0
+        mainTimer = 0; inspectTimer = 0; connTimer = 0; oorTimer = 0
         self:Hide()
         if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
             BiSTracker_RefreshRaidList()
@@ -2012,7 +2033,7 @@ do
         BiSTrackerDB.raidSnapshot  = nil
         BiSTrackerDB.msChanged     = nil
         BiSTrackerDB.whisperOptOut = nil
-        raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
+        raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}; raidScanOOR = {}
         for k in pairs(raidMSChanged)  do raidMSChanged[k]  = nil end
         for k in pairs(noWhisperUsers) do noWhisperUsers[k] = nil end
         for k in pairs(whisperOn)      do whisperOn[k]      = nil end
@@ -2020,7 +2041,7 @@ do
         rebuildActive = false; rebuildTimer = 0
         fullScanInProgress = false; onlineStatus = {}
         snapshotLoadAttempted = true   -- snapshot is gone; don't try to restore one
-        mainTimer = 0; inspectTimer = 0; connTimer = 0
+        mainTimer = 0; inspectTimer = 0; connTimer = 0; oorTimer = 0
         if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
             BiSTracker_RefreshRaidList()
         end
@@ -2036,7 +2057,7 @@ do
     function raidScanFrame:HandleRosterUpdate()
         if not LS().scanRaid then return end
         if GetNumRaidMembers() == 0 then
-            raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}
+            raidScanData = {}; raidScanQueue = {}; raidScanFailed = {}; raidScanOOR = {}
             currentUnit = nil; currentName = nil; currentEntry = nil; currentGUID = nil
             rebuildActive = false; rebuildTimer = 0
             fullScanInProgress = false; onlineStatus = {}
@@ -2070,7 +2091,7 @@ do
             if not currentRoster[name] then
                 raidScanData[name] = nil
                 raidScanFailed[name] = nil
-                local cancelled = RemoveFromQueue(name)
+                local cancelled = RemoveFromQueue(name)   -- also unparks from raidScanOOR
                 if cancelled and #raidScanQueue == 0 then
                     rebuildActive = true; rebuildTimer = 0
                 end
@@ -2080,6 +2101,8 @@ do
 
         -- Queue players who just joined (online only)
         for name, info in pairs(currentRoster) do
+            -- Skip players with data, dropped ones ("Unable to scan" persists until the next full
+            -- scan), and anyone already queued or parked (IsQueued covers the OOR parking).
             if not raidScanData[name] and not raidScanFailed[name] and not IsQueued(name) then
                 if info.online then
                     EnqueuePlayer(name, info.unitID, name == playerName)
@@ -2104,6 +2127,38 @@ do
         if connTimer >= CONN_POLL then
             connTimer = 0
             PollConnectionChanges()
+        end
+
+        -- Sweep the WHOLE out-of-range table every OOR_POLL (not per-entry): players back in
+        -- inspect range jump to the front of the main queue, leavers are dropped, the rest stay
+        -- parked. Runs even during an in-progress inspect; releases wait for it to finish.
+        oorTimer = oorTimer + elapsed
+        if oorTimer >= OOR_POLL then
+            oorTimer = 0
+            local refresh = false
+            for name, e in pairs(raidScanOOR) do
+                local online, unitID = false, nil
+                for i = 1, GetNumRaidMembers() do
+                    local n, _, _, _, _, _, _, onl = GetRaidRosterInfo(i)
+                    if n == name then online = onl; unitID = "raid"..i; break end
+                end
+                if not unitID then
+                    raidScanOOR[name] = nil   -- left the raid: drop
+                    refresh = true
+                    if debugMode then Print("[RaidScan] |cffffff00" .. name .. "|r left the raid, dropped from out-of-range list.") end
+                elseif online and CanInspect(unitID) and CheckInteractDistance(unitID, 1) then
+                    e.unitID = unitID
+                    table.insert(raidScanQueue, 1, e)   -- back in range: next up
+                    raidScanOOR[name] = nil
+                    refresh = true
+                    if currentUnit == nil then mainTimer = INTERVAL end   -- idle: inspect them right away
+                    if debugMode then Print("[RaidScan] |cffffff00" .. name .. "|r back in inspect range, scanning next.") end
+                end
+                -- else: still out of range / offline -> stays parked
+            end
+            if refresh and mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+                BiSTracker_RefreshRaidList()
+            end
         end
 
         -- Wait for in-progress inspection to finish
@@ -2163,8 +2218,10 @@ do
                 end
 
                 if (slotCount == 0 or not spec) and not (currentEntry and currentEntry.isSelf) then
-                    -- No gear (out of range) or no spec (talents didn't arrive in time): retry rather
-                    -- than store an empty/spec-less entry. Dropped after MAX_REQUEUES; next full sweep retries.
+                    -- Inspect came back with no gear or no spec (talents didn't arrive): re-queue to the
+                    -- END of the inspect queue and retry, up to MAX_REQUEUES. This is NOT the out-of-range
+                    -- path (the pre-inspect range gate handles that); a player who keeps failing here
+                    -- becomes "Unable to scan" and is dropped until the next full sweep re-attempts them.
                     if currentEntry then
                         currentEntry.requeues = (currentEntry.requeues or 0) + 1
                         if currentEntry.requeues < MAX_REQUEUES then
@@ -2204,6 +2261,7 @@ do
                     end
                     raidScanData[currentName] = { spec=spec, class=classL, gear=gear }
                     raidScanFailed[currentName] = nil   -- scanned OK: clear any prior "Unable to scan"
+                    raidScanOOR[currentName]    = nil   -- and any out-of-range parking
                     if debugMode then
                         local specStr  = spec and ("|cffaaaaaa" .. spec .. "|r") or ("|cff666666class:" .. (classL or "?") .. "|r")
                         local queueStr = #raidScanQueue > 0 and ("|cffaaaaaa" .. #raidScanQueue .. " left|r") or "|cff44ff44done|r"
@@ -2270,26 +2328,16 @@ do
             end
             entry.unitID = unitID
 
-            -- Range gate: the server only answers NotifyInspect within ~28 yd. Requeue now
-            -- instead of burning the TALENT_TIMEOUT wait on a target that can never answer.
+            -- Range gate: the server only answers NotifyInspect within ~28 yd. Park the entry
+            -- in the out-of-range table (swept as a whole every OOR_POLL) instead of burning
+            -- main-queue retries; it jumps back to the queue front once in range.
             if not (CanInspect(unitID) and CheckInteractDistance(unitID, 1)) then
-                entry.requeues = (entry.requeues or 0) + 1
-                if entry.requeues < MAX_REQUEUES then
-                    if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r not inspectable (out of range?), re-queuing (" .. entry.requeues .. "/" .. MAX_REQUEUES .. ").") end
-                    table.insert(raidScanQueue, entry)
-                    -- No packet was sent, so skipping ahead is free: try the next player now.
-                    -- Only when the requeued player is alone do we keep the INTERVAL pacing,
-                    -- so a lone out-of-range player gets retries spread out instead of burning
-                    -- all MAX_REQUEUES within a few frames.
-                    if #raidScanQueue > 1 then mainTimer = INTERVAL end
-                else
-                    raidScanFailed[entry.name] = true   -- dropped after retries: show "Unable to scan"
-                    if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r not inspectable after " .. MAX_REQUEUES .. "x, dropping until next full scan.") end
-                    if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
-                        BiSTracker_RefreshRaidList()
-                    end
-                    mainTimer = INTERVAL   -- nothing was sent: move on to the next player now
+                raidScanOOR[entry.name] = entry
+                if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r out of inspect range, parked (re-checked every " .. OOR_POLL .. "s).") end
+                if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
+                    BiSTracker_RefreshRaidList()   -- show "Out of range, retrying..." right away
                 end
+                mainTimer = INTERVAL   -- nothing was sent: move on to the next player now
                 if #raidScanQueue == 0 then OnQueueDrained() end
                 return
             end
