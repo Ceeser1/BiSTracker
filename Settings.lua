@@ -1705,7 +1705,8 @@ do
     local onlineStatus       = {}     -- onlineStatus[name] = bool; last-known connection state
     local connTimer          = 0
     local CONN_POLL          = 2.0    -- seconds between connection-status polls
-    local INTERVAL           = 4.5    -- idle gap between inspects (added on top of the inspect wait)
+    local INTERVAL           = 1.5    -- idle gap between inspects; also the safety margin against
+                                      -- ultra-late replies being misattributed (see GUID tracking below)
     local TALENT_TIMEOUT     = 2.5    -- max wait for inspect talent data before giving up on this target
     local REBUILD_INTERVAL   = 300.0  -- 5 minutes between full scans
     local MAX_REQUEUES       = 5      -- out-of-range re-queue cap before dropping (re-added next full scan)
@@ -2250,12 +2251,18 @@ do
                 if entry.requeues < MAX_REQUEUES then
                     if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r not inspectable (out of range?), re-queuing (" .. entry.requeues .. "/" .. MAX_REQUEUES .. ").") end
                     table.insert(raidScanQueue, entry)
+                    -- No packet was sent, so skipping ahead is free: try the next player now.
+                    -- Only when the requeued player is alone do we keep the INTERVAL pacing,
+                    -- so a lone out-of-range player gets retries spread out instead of burning
+                    -- all MAX_REQUEUES within a few frames.
+                    if #raidScanQueue > 1 then mainTimer = INTERVAL end
                 else
                     raidScanFailed[entry.name] = true   -- dropped after retries: show "Unable to scan"
                     if debugMode then Print("[RaidScan] |cffffff00" .. entry.name .. "|r not inspectable after " .. MAX_REQUEUES .. "x, dropping until next full scan.") end
                     if mainFrame and mainFrame:IsShown() and viewMode == "mlSettings" then
                         BiSTracker_RefreshRaidList()
                     end
+                    mainTimer = INTERVAL   -- nothing was sent: move on to the next player now
                 end
                 if #raidScanQueue == 0 then OnQueueDrained() end
                 return
