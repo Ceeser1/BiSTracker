@@ -764,10 +764,13 @@ function HandlePostedItem(sender, message)
         end
     end
 
-    -- Opted out ("Never be Announcer"): never react, even when no one is elected.
+    -- Opted out ("Never be Announcer"): never react.
     if LS().skipAnnouncer then return end
-    -- Otherwise only the elected announcer reacts (so addon users don't all respond).
-    if currentAnnouncer and currentAnnouncer ~= UnitName("player") then return end
+    -- STRICT gate for everything outward (announce say/raid/RW + inform whispers below): only the
+    -- ELECTED announcer reacts. Must be strict equality -- the old `currentAnnouncer and ~=` form
+    -- fell through when no announcer was elected yet (currentAnnouncer == nil), which made a
+    -- freshly-relogged non-announcer react to posts until the HELLO/ANN election settled.
+    if currentAnnouncer ~= UnitName("player") then return end
 
     -- Announce + Inform: react only to officer-posted loot (the announcer handles "who").
     if ls.reactTo == "nothing"     then return end
