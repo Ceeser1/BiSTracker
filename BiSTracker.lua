@@ -1,7 +1,7 @@
 -- BiSTracker: core state, events, retry frame, slash commands
 
 local ADDON_NAME = "BiSTracker"
-local ADDON_VERSION = GetAddOnMetadata(ADDON_NAME, "Version") or "?"   -- pulled from the .toc
+ADDON_VERSION = GetAddOnMetadata(ADDON_NAME, "Version") or "?"   -- global (from .toc); Announcer.lua tags presence with it
 
 
 -- ============================================================
@@ -22,6 +22,48 @@ local RETRY_INTERVAL = 3.0
 
 debugMode = false   -- toggle in-game with /bis debug
 
+-- ============================================================
+-- VERSION CHECK  (rides on the HELLO/SKIP presence heartbeat)
+-- ============================================================
+-- Presence messages carry the sender's version (HELLO:1.7.2 / SKIP:1.7.2). When we learn a peer is
+-- running a newer version, we wait a few seconds to collect all replies (so a laggy client's reply
+-- still counts), then tell the user ONCE per session which newest version is out there.
+local VER_COLLECT_DELAY = 3.0
+local versionNotified   = false   -- have we already told the user this session? (spam guard)
+local highestPeerVer    = nil     -- highest peer version string seen so far
+local highestPeerName   = nil     -- name of the peer who reported highestPeerVer
+
+-- Collection window: fires VER_COLLECT_DELAY after the first peer version is seen, then decides once.
+local verFrame = CreateFrame("Frame")
+local verAccum = 0
+verFrame:Hide()
+verFrame:SetScript("OnUpdate", function(self, elapsed)
+    verAccum = verAccum + elapsed
+    if verAccum < VER_COLLECT_DELAY then return end
+    self:Hide()
+    if highestPeerVer and VersionLess(ADDON_VERSION, highestPeerVer) then
+        if not versionNotified then
+            versionNotified = true
+            if debugMode then Print("[Version] V" .. highestPeerVer .. " from " .. tostring(highestPeerName) .. " is newer. Notifying...") end
+            Print(COLOR.legendary .. "A newer version (v" .. highestPeerVer .. ") of BiSTracker is available! Get it from github.com/Ceeser1/BiSTracker|r")
+        end
+    elseif debugMode then
+        Print("[Version] V" .. ADDON_VERSION .. " is the latest.")
+    end
+end)
+
+-- Note a peer's advertised version (from any HELLO/SKIP). Tracks the newest version + who reported
+-- it and opens a short collection window; when it elapses we compare against our own version once.
+-- No-op once we've already notified this session.
+function NoteVersion(ver, sender)  -- global: called from Announcer.lua on every HELLO/SKIP
+    if versionNotified then return end
+    if not IsValidVersion(ver) then return end
+    if not highestPeerVer or VersionLess(highestPeerVer, ver) then
+        highestPeerVer  = ver
+        highestPeerName = sender
+    end
+    if not verFrame:IsShown() then verAccum = 0; verFrame:Show() end   -- collect, then decide on elapse
+end
 
 -- ============================================================
 -- DELAYED INIT

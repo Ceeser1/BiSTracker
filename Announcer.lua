@@ -4,7 +4,7 @@
 -- Child of Settings.lua: the announcer SETTINGS UI (checkboxes,
 -- "Current Announcer" label, Whisper?/MS-Changed columns) lives
 -- there; this file owns everything that runs in the background -
--- addon-message transport, version check, announcer election,
+-- addon-message transport, announcer election,
 -- MS-Changed / no-whisper sync, and reacting to posted loot.
 --
 -- Shared state this file OWNS (globals, read by Settings/RaidScan):
@@ -15,7 +15,8 @@
 --   BroadcastMSChanges, BiSTracker_RefreshAnnouncer, BiSTracker_AnnouncerInit,
 --   BiSTracker_OnAddonMessage, BiSTracker_AnnouncerOnRoster, HandlePostedItem
 -- Globals from Settings.lua this file USES:
---   LS(), UpdateAnnouncerUI(), BiSTracker_RefreshRaidList()
+--   LS(), UpdateAnnouncerUI(), BiSTracker_RefreshRaidList() (Settings.lua),
+--   NoteVersion() (BiSTracker.lua)
 -- ============================================================
 
 raidMSChanged            = {}  -- [playerName]=true: user flagged them as having changed Main Spec (global: RaidScan.lua wipes it)
@@ -72,51 +73,8 @@ function SendAddon(msg, target)  -- global: Settings.lua UI sends presence on to
     outFrame:Show()
 end
 
--- ============================================================
--- VERSION CHECK  (rides on the HELLO/SKIP presence heartbeat)
--- ============================================================
--- Presence messages carry the sender's version (HELLO:1.7.2 / SKIP:1.7.2). When we learn a peer is
--- running a newer version, we wait a few seconds to collect all replies (so a laggy client's reply
--- still counts), then tell the user ONCE per session which newest version is out there.
-local ADDON_VERSION     = GetAddOnMetadata(ADDON_PREFIX, "Version") or "?"
-local VER_COLLECT_DELAY = 3.0
-local versionNotified   = false   -- have we already told the user this session? (spam guard)
-local highestPeerVer    = nil     -- highest peer version string seen so far
-local highestPeerName   = nil     -- name of the peer who reported highestPeerVer
-
--- Collection window: fires VER_COLLECT_DELAY after the first peer version is seen, then decides once.
-local verFrame = CreateFrame("Frame")
-local verAccum = 0
-verFrame:Hide()
-verFrame:SetScript("OnUpdate", function(self, elapsed)
-    verAccum = verAccum + elapsed
-    if verAccum < VER_COLLECT_DELAY then return end
-    self:Hide()
-    if highestPeerVer and VersionLess(ADDON_VERSION, highestPeerVer) then
-        if not versionNotified then
-            versionNotified = true
-            if debugMode then Print("[Version] V" .. highestPeerVer .. " from " .. tostring(highestPeerName) .. " is newer. Notifying...") end
-            Print(COLOR.legendary .. "A newer version (v" .. highestPeerVer .. ") of BiSTracker is available! Get it from github.com/Ceeser1/BiSTracker|r")
-        end
-    elseif debugMode then
-        Print("[Version] V" .. ADDON_VERSION .. " is the latest.")
-    end
-end)
-
--- Note a peer's advertised version (from any HELLO/SKIP). Tracks the newest version + who reported
--- it and opens a short collection window; when it elapses we compare against our own version once.
--- No-op once we've already notified this session.
-local function NoteVersion(ver, sender)
-    if versionNotified then return end
-    if not IsValidVersion(ver) then return end
-    if not highestPeerVer or VersionLess(highestPeerVer, ver) then
-        highestPeerVer  = ver
-        highestPeerName = sender
-    end
-    if not verFrame:IsShown() then verAccum = 0; verFrame:Show() end   -- collect, then decide on elapse
-end
-
 -- Our own presence body, version-tagged: "HELLO:<ver>" (candidate) or "SKIP:<ver>" (opted out).
+-- ADDON_VERSION is the global set in BiSTracker.lua (which loads first); the compare/notify lives there.
 function PresenceMsg()  -- global: used with SendAddon by the Settings.lua UI
     return (LS().skipAnnouncer and "SKIP:" or "HELLO:") .. ADDON_VERSION
 end
