@@ -43,6 +43,7 @@ mscLocked = false  -- true once a listener applies an announcer broadcast: MS-Ch
 noWhisperUsers = {}  -- (global: RaidScan.lua wipes it) [name] = true: player opted out of upgrade whispers (session set, all clients)
 local nwsBuf = { from = nil, total = 0, seen = 0, parts = {} }  -- new-announcer handoff reassembly buffer
 local nwLastSent = false    -- last opt-out value we actually broadcast (idempotency guard; false = default)
+local presenceLastSent = nil -- last skipAnnouncer value we actually BROADCAST (idempotency guard; nil = none yet)
 local wasInRaid = false     -- tracks the not-in-raid -> in-raid transition to broadcast on join
 -- Announcer's per-player Whisper? overrides. Session-only (NOT persisted) so every session defaults
 -- to "on" (whisper); the persistent off-authority is each player's own NW opt-out broadcast.
@@ -104,6 +105,32 @@ function ScheduleNoWhisperBroadcast()  -- global: called from the allow-whispers
         nwThrottlePending = true; nwThrottleAccum = 0; nwThrottleFrame:Show()
     end
     -- Already pending: the running timer will pick up the latest allowWhispers value when it fires.
+end
+
+-- Same 5s trailing throttle for our own candidacy: spam-toggling "never be announcer" collapses into a
+-- single settled HELLO/SKIP + one re-election, instead of a presence broadcast (and maybe an ANN) per
+-- click. The setting itself takes effect locally at once (HandlePostedItem reads LS().skipAnnouncer live);
+-- only telling the raid + re-electing is deferred until the toggling settles.
+local presThrottleFrame = CreateFrame("Frame")
+local presThrottleAccum = 0
+local presThrottlePending = false
+presThrottleFrame:Hide()
+presThrottleFrame:SetScript("OnUpdate", function(self, elapsed)
+    presThrottleAccum = presThrottleAccum + elapsed
+    if presThrottleAccum >= 5.0 then
+        presThrottleAccum = 0; presThrottlePending = false; self:Hide()
+        if GetNumRaidMembers() > 0 and LS().skipAnnouncer ~= presenceLastSent then   -- only if it actually changed
+            presenceLastSent = LS().skipAnnouncer
+            SendAddon(PresenceMsg())        -- settled candidacy: advertise HELLO/SKIP to the raid once
+            BiSTracker_RefreshAnnouncer()   -- re-elect; the new winner (maybe us) broadcasts ANN
+        end
+    end
+end)
+function SchedulePresenceBroadcast()  -- global: called from the "never be announcer" checkbox (Settings.lua)
+    if not presThrottlePending then
+        presThrottlePending = true; presThrottleAccum = 0; presThrottleFrame:Show()
+    end
+    -- Already pending: the running timer will pick up the latest skipAnnouncer value when it fires.
 end
 
 -- Persist each player's broadcast choice (per realm) so the announcer remembers who opted out across
@@ -509,6 +536,7 @@ function BiSTracker_AnnouncerOnRoster()
         for k in pairs(noWhisperUsers) do noWhisperUsers[k] = nil end
         addonUsers[UnitName("player")] = true
         wasInRaid = false
+        presenceLastSent = nil   -- left the raid: next join re-advertises our candidacy fresh
         SetAnnouncer(nil)
         return
     end
@@ -521,6 +549,7 @@ function BiSTracker_AnnouncerOnRoster()
         -- (Re)advertise our presence+version now that we're in a raid. Without this, forming/joining
         -- a raid after login would never emit a HELLO (login-time init already ran out of raid).
         SendAddon(PresenceMsg())
+        presenceLastSent = LS().skipAnnouncer   -- record what we just advertised (throttle idempotency)
     end
     local inRaid = {}
     for i = 1, GetNumRaidMembers() do

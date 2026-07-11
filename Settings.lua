@@ -822,13 +822,14 @@ function BuildLootSettingsUI(c)
             BiSTracker_RefreshRaidList()   -- gate changed: refresh our own Whisper? row
         end
     end)
-    -- Skip Announcer: re-advertise candidacy to the raid (SKIP/HELLO) and re-elect.
+    -- Skip Announcer: takes effect locally at once (HandlePostedItem reads LS().skipAnnouncer live).
+    -- Re-advertising candidacy (SKIP/HELLO) + re-election is throttled so spam-toggling the checkbox
+    -- collapses into a single settled broadcast instead of one per click.
     cbSkipAnnouncer:SetScript("OnClick", function()
         LS().skipAnnouncer = cbSkipAnnouncer:GetChecked() and true or false
         if GetNumRaidMembers() > 0 then
-            SendAddon(PresenceMsg())
+            SchedulePresenceBroadcast()
         end
-        BiSTracker_RefreshAnnouncer()
     end)
 
     -- Radio: reactTo
