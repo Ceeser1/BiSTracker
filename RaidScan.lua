@@ -9,9 +9,10 @@
 -- Shared state this file OWNS (globals, read by Settings.lua):
 --   raidScanData, raidScanOOR, raidScanFailed, raidScanQueue,
 --   raidScanFrame (declared in BiSTracker.lua, assigned here)
--- Globals from Settings.lua this file USES:
---   LS(), LoadMSChanged(), LoadWhisperOptOut(), BroadcastMSChanges(),
---   raidMSChanged, noWhisperUsers, whisperOn, BiSTracker_RefreshRaidList()
+-- Globals from other files this file USES:
+--   LS(), BiSTracker_RefreshRaidList()  (Settings.lua)
+--   LoadMSChanged(), LoadWhisperOptOut(), BroadcastMSChanges(),
+--   raidMSChanged, noWhisperUsers, whisperOn  (Announcer.lua)
 -- ============================================================
 
 raidScanData   = {}  -- [playerName] = { spec, class, gear={} }

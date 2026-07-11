@@ -13,5 +13,6 @@ Minimap.lua
 Main.lua
 Edit.lua
 Export.lua
+Announcer.lua
 Settings.lua
 RaidScan.lua
