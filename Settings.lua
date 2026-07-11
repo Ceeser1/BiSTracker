@@ -993,7 +993,8 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
     -- Write one gear line. Empty slots still show as white "Empty"; the sole exception is Off Hand,
     -- which is hidden when empty (2H weapons / no shield are normal, not a missing item).
     local COL_W = { DETAIL_COL_X[2] - DETAIL_COL_X[1] - 8, 626 - DETAIL_COL_X[2] - 8 }
-    local function WriteItem(c, lineIdx, yOff, gearSlot, label)
+    local function WriteItem(c, lineIdx, yOff, gearSlot)
+        local label = gearSlot   -- display label defaults to the slot name (Ranged overrides it below)
         local item  = gear[gearSlot]
         local empty = not item or not item.name
         if empty and gearSlot == "Off Hand" then return lineIdx, yOff end
@@ -1020,43 +1021,30 @@ local function UpdateRaidDetailPanel(panel, scanEntry)
 
     -- Slot order matches the two-column layout of the main window
     local COL1_GEAR = {
-        { "Main Hand",  "Main Hand"  },
-        { "Off Hand",   "Off Hand"   },
-        { "Ranged",     "Ranged"     },
-        { false,        false        },   -- blank spacer between weapons and armor
-        { "Head",       "Head"       },
-        { "Neck",       "Neck"       },
-        { "Shoulders",  "Shoulders"  },
-        { "Back",       "Back"       },
-        { "Chest",      "Chest"      },
-        { "Wrist",      "Wrist"      },
+        "Main Hand", "Off Hand", "Ranged",
+        false,   -- blank spacer between weapons and armor
+        "Head", "Neck", "Shoulders", "Back", "Chest", "Wrist",
     }
     local COL2_GEAR = {
-        { "Hands",      "Hands"      },
-        { "Waist",      "Waist"      },
-        { "Legs",       "Legs"       },
-        { "Feet",       "Feet"       },
-        { "Ring 1",     "Ring 1"     },
-        { "Ring 2",     "Ring 2"     },
-        { "Trinket 1",  "Trinket 1"  },
-        { "Trinket 2",  "Trinket 2"  },
+        "Hands", "Waist", "Legs", "Feet",
+        "Ring 1", "Ring 2", "Trinket 1", "Trinket 2",
     }
 
     local colHeights = { 0, 0 }
     do
         local lineIdx, yOff = 0, -4
         for _, s in ipairs(COL1_GEAR) do
-            if not s[1] then
+            if not s then
                 if lineIdx > 0 then yOff = yOff - DETAIL_LINE_H end   -- blank spacer row (only after real rows)
             else
-                lineIdx, yOff = WriteItem(1, lineIdx, yOff, s[1], s[2])
+                lineIdx, yOff = WriteItem(1, lineIdx, yOff, s)
             end
         end
         colHeights[1] = math.abs(yOff) + 6
     end
     do
         local lineIdx, yOff = 0, -4
-        for _, s in ipairs(COL2_GEAR) do lineIdx, yOff = WriteItem(2, lineIdx, yOff, s[1], s[2]) end
+        for _, s in ipairs(COL2_GEAR) do lineIdx, yOff = WriteItem(2, lineIdx, yOff, s) end
         colHeights[2] = math.abs(yOff) + 6
     end
 
